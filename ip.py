@@ -56,6 +56,10 @@ HTML_TEMPLATE = """
             <div class="info"><strong>Ваш IP:</strong> {{ ip }}</div>
             <div class="info"><strong>Страна:</strong> {{ country }}</div>
             <div class="info"><strong>Город:</strong> {{ city }}</div>
+            <div class="info"><strong>Провайдер:</strong> {{ isp }}</div>
+            <div class="info"><strong>Широта:</strong> {{ latitude }}</div>
+            <div class="info"><strong>Долгота:</strong> {{ longitude }}</div>
+            <div class="info"><strong>Язык:</strong> {{ language }}</div>
         </div>
         <div class="footer">Данные получены через <a href="https://ipapi.co/" target="_blank" style="color: #00FF88;">ipapi.co</a></div>
     </div>
@@ -74,8 +78,12 @@ def show_ip():
         country = geo.get('country_name', 'Неизвестно')
         city = geo.get('city', 'Неизвестно')
         isp = geo.get('org', 'Неизвестно')  # Провайдер
-    except:
-        country = city = isp = "Ошибка запроса"
+        latitude = geo.get('latitude', 'Неизвестно')
+        longitude = geo.get('longitude', 'Неизвестно')
+        language = geo.get('languages', 'Неизвестно')[0] if geo.get('languages') else 'Неизвестно'
+    except Exception as e:
+        country = city = isp = latitude = longitude = language = "Ошибка запроса"
+        print(f"Ошибка запроса: {e}")
 
     # Время
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -88,9 +96,15 @@ def show_ip():
         f.write(f"Страна: {country}\n")
         f.write(f"Город: {city}\n")
         f.write(f"Провайдер: {isp}\n")
+        f.write(f"Широта: {latitude}\n")
+        f.write(f"Долгота: {longitude}\n")
+        f.write(f"Язык: {language}\n")
         f.write(f"User-Agent: {user_agent}\n")
 
-    return render_template_string(HTML_TEMPLATE, ip=ip, country=country, city=city)
+    return render_template_string(HTML_TEMPLATE, 
+                                  ip=ip, country=country, city=city, 
+                                  isp=isp, latitude=latitude, 
+                                  longitude=longitude, language=language)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
