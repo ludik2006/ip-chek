@@ -1,10 +1,14 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, redirect, url_for
 import requests
 from datetime import datetime
 import re
-import json
+import os
 
 app = Flask(__name__)
+
+# База данных для хранения согласий (в реальном проекте используйте SQLite/PostgreSQL)
+user_consents = {}
+LOG_FILE = "ips.log"
 
 def get_ip_data(ip):
     try:
@@ -15,8 +19,6 @@ def get_ip_data(ip):
 
 def parse_user_agent(user_agent):
     os = browser = device = "Неизвестно"
-    
-    # Определение ОС
     os_patterns = {
         'Windows 11': r'Windows NT 10.0; Win64; x64',
         'Windows 10': r'Windows NT 10.0',
@@ -31,7 +33,6 @@ def parse_user_agent(user_agent):
             os = name
             break
 
-    # Определение браузера
     browser_patterns = {
         'Chrome': r'Chrome',
         'Firefox': r'Firefox',
@@ -44,11 +45,7 @@ def parse_user_agent(user_agent):
             browser = name
             break
 
-    # Тип устройства
-    if 'Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent:
-        device = "Смартфон/Планшет"
-    else:
-        device = "Компьютер"
+    device = "Смартфон/Планшет" if ('Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent) else "Компьютер"
 
     return os, browser, device
 
@@ -74,239 +71,174 @@ User-Agent: {user_agent}
 """
     log_entry += "------------------------------------\n"
     
-    with open("ips.log", "a", encoding="utf-8") as f:
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(log_entry)
+
+def delete_user_logs(ip):
+    if not os.path.exists(LOG_FILE):
+        return False
+
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    skip = False
+    for line in lines:
+        if line.startswith("=== Новый вход ==="):
+            skip = False
+        if f"IP: {ip}" in line:
+            skip = True
+        if not skip:
+            new_lines.append(line)
+
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    return True
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Полная информация об устройстве</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Сервис геолокации</title>
     <style>
-        :root {
-            --primary: #4285f4;
-            --secondary: #34a853;
-        }
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            margin: 0;
-            padding: 15px;
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
             line-height: 1.6;
-            color: #333;
         }
-        .info-block {
-            background: #f8f9fa;
-            border-radius: 12px;
-            padding: 15px;
-            margin-bottom: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+        .consent-box, .warning-box {
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        h2 {
-            color: var(--primary);
-            margin-top: 0;
+        .consent-box {
+            background-color: #f0f8ff;
+            border: 1px solid #d0e3ff;
+        }
+        .warning-box {
+            background-color: #fff0f0;
+            border: 1px solid #ffd0d0;
         }
         button {
-            background: var(--primary);
-            color: white;
+            padding: 10px 20px;
+            margin: 10px 5px;
             border: none;
-            padding: 12px 20px;
-            border-radius: 8px;
-            font-size: 16px;
-            width: 100%;
+            border-radius: 5px;
             cursor: pointer;
-            margin: 10px 0;
-            transition: background 0.3s;
+            font-size: 16px;
         }
-        button:hover {
-            background: #3367d6;
-        }
-        #map {
-            height: 250px;
-            width: 100%;
-            border-radius: 12px;
-            margin-top: 15px;
-            border: 1px solid #ddd;
-        }
-        .badge {
-            display: inline-block;
-            padding: 3px 8px;
-            background: var(--secondary);
+        .btn-accept {
+            background-color: #4CAF50;
             color: white;
-            border-radius: 10px;
-            font-size: 12px;
         }
-        .loading {
+        .btn-deny {
+            background-color: #f44336;
+            color: white;
+        }
+        .btn-delete {
+            background-color: #ff9800;
+            color: white;
+        }
+        #geoResult, #phishing-warning {
             display: none;
-            text-align: center;
-            margin: 10px 0;
-            color: #666;
-        }
-        .grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-        }
-        @media (max-width: 600px) {
-            .grid {
-                grid-template-columns: 1fr;
-            }
         }
     </style>
 </head>
 <body>
-    <div class="info-block">
-        <h2>🌐 Сетевая информация</h2>
-        <div class="grid">
-            <div>
-                <p><strong>IP адрес:</strong><br>{{ ip }}</p>
-                <p><strong>Провайдер:</strong><br>{{ isp }}</p>
-            </div>
-            <div>
-                <p><strong>Страна:</strong><br>{{ country }}</p>
-                <p><strong>Город:</strong><br>{{ city }}</p>
-            </div>
+    {% if not consent_given %}
+    <div class="consent-box">
+        <h2>Согласие на сбор данных</h2>
+        <p>Мы используем cookies и собираем данные о вашем местоположении для улучшения сервиса. Продолжая, вы соглашаетесь с нашей политикой конфиденциальности.</p>
+        <div>
+            <button class="btn-accept" onclick="giveConsent()">Принять</button>
+            <button class="btn-deny" onclick="window.location.href='/deny'">Отклонить</button>
         </div>
     </div>
+    {% endif %}
 
-    <div class="info-block">
-        <h2>💻 Системная информация</h2>
-        <div class="grid">
-            <div>
-                <p><strong>ОС:</strong><br>{{ os }}</p>
-                <p><strong>Устройство:</strong><br>{{ device }}</p>
-            </div>
-            <div>
-                <p><strong>Браузер:</strong><br>{{ browser }}</p>
-                <p><strong>Ядра CPU:</strong><br><span id="cpuCores">Определение...</span></p>
-            </div>
-        </div>
+    <div id="geoResult" class="consent-box">
+        <h2>Определение местоположения</h2>
+        <button onclick="getLocation()">Определить моё местоположение</button>
+        <div id="locationData"></div>
+        <div id="map" style="height: 300px; margin-top: 15px;"></div>
     </div>
 
-    <div class="info-block">
-        <h2>📍 Точная геолокация</h2>
-        <button onclick="getPreciseLocation()">Определить моё местоположение</button>
-        <div id="loading" class="loading">
-            <p>Определение местоположения...</p>
-        </div>
-        <div id="geoResult" style="display:none;">
-            <p><strong>Координаты:</strong><br>
-            Широта: <span id="latitude"></span><br>
-            Долгота: <span id="longitude"></span><br>
-            Точность: <span id="accuracy" class="badge"></span></p>
-            <p><strong>Адрес:</strong><br><span id="address"></span></p>
-            <div id="map"></div>
-        </div>
+    <div id="phishing-warning" class="warning-box">
+        <h2>⚠️ Внимание! Фишинговая атака</h2>
+        <p>Вы только что стали жертвой учебной фишинговой атаки. Нажав "Принять", вы добровольно передали свои геоданные.</p>
+        <p><strong>Урок безопасности:</strong> Всегда проверяйте, кому вы даёте доступ к вашей геолокации!</p>
+        <button class="btn-delete" onclick="deleteMyData()">Удалить мои данные из логов</button>
     </div>
 
     <script>
-        // Определение ядер процессора
-        document.getElementById('cpuCores').textContent = 
-            navigator.hardwareConcurrency || "Неизвестно";
-
-        // Улучшенная геолокация
-        function getPreciseLocation() {
-            const loading = document.getElementById('loading');
-            const geoResult = document.getElementById('geoResult');
-            
-            loading.style.display = 'block';
-            geoResult.style.display = 'none';
-            
-            if (!navigator.geolocation) {
-                alert("Ваш браузер не поддерживает геолокацию");
-                loading.style.display = 'none';
-                return;
-            }
-
-            navigator.geolocation.getCurrentPosition(
-                async (position) => {
-                    const lat = position.coords.latitude;
-                    const lon = position.coords.longitude;
-                    const acc = Math.round(position.coords.accuracy);
-                    
-                    // Отображение координат
-                    document.getElementById('latitude').textContent = lat.toFixed(6);
-                    document.getElementById('longitude').textContent = lon.toFixed(6);
-                    document.getElementById('accuracy').textContent = `±${acc} м`;
-                    
-                    // Получение адреса
-                    const address = await getAddress(lat, lon);
-                    document.getElementById('address').textContent = address || "Не удалось определить";
-                    
-                    // Показать карту
-                    showMap(lat, lon);
-                    
-                    // Отправить данные на сервер для логирования
-                    sendToServer(lat, lon, acc, address);
-                    
-                    loading.style.display = 'none';
-                    geoResult.style.display = 'block';
-                },
-                (error) => {
-                    loading.style.display = 'none';
-                    handleGeolocationError(error);
-                },
-                {
-                    enableHighAccuracy: true,
-                    timeout: 10000,
-                    maximumAge: 0
-                }
-            );
+        function giveConsent() {
+            fetch('/give-consent', { method: 'POST' })
+                .then(() => {
+                    document.querySelector('.consent-box').style.display = 'none';
+                    document.getElementById('geoResult').style.display = 'block';
+                });
         }
 
-        async function getAddress(lat, lon) {
-            try {
-                const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`);
-                const data = await response.json();
-                const addr = data.address || {};
-                return [
-                    addr.road, 
-                    addr.house_number, 
-                    addr.city || addr.town || addr.village
-                ].filter(Boolean).join(', ');
-            } catch {
-                return null;
+        function getLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    showPosition,
+                    showError,
+                    { enableHighAccuracy: true }
+                );
+            } else {
+                alert("Геолокация не поддерживается вашим браузером");
             }
         }
 
-        function showMap(lat, lon) {
-            // Используем OpenStreetMap для отображения
-            document.getElementById('map').innerHTML = `
-                <iframe
-                    width="100%"
-                    height="100%"
-                    frameborder="0"
-                    scrolling="no"
-                    marginheight="0"
-                    marginwidth="0"
-                    src="https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01}%2C${lat-0.01}%2C${lon+0.01}%2C${lat+0.01}&amp;layer=mapnik&amp;marker=${lat}%2C${lon}"
-                ></iframe>`;
-        }
+        function showPosition(position) {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            const acc = position.coords.accuracy;
+            
+            document.getElementById('locationData').innerHTML = `
+                <p><strong>Широта:</strong> ${lat.toFixed(6)}</p>
+                <p><strong>Долгота:</strong> ${lon.toFixed(6)}</p>
+                <p><strong>Точность:</strong> ±${Math.round(acc)} метров</p>
+            `;
 
-        function sendToServer(lat, lon, acc, address) {
-            // Отправка данных GPS на сервер для логирования
-            fetch('/log_gps', {
+            // Отправка данных на сервер
+            fetch('/log-gps', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     lat: lat,
                     lon: lon,
-                    acc: acc,
-                    address: address
+                    acc: acc
                 })
             });
+
+            // Показать предупреждение о фишинге
+            document.getElementById('phishing-warning').style.display = 'block';
+            document.getElementById('geoResult').style.display = 'none';
         }
 
-        function handleGeolocationError(error) {
-            const messages = {
-                1: "Доступ к геолокации запрещён. Разрешите доступ в настройках браузера.",
-                2: "Не удалось определить местоположение. Проверьте подключение к интернету и GPS.",
-                3: "Время ожидания истекло. Убедитесь, что GPS включён."
-            };
-            alert(messages[error.code] || "Произошла неизвестная ошибка");
+        function showError(error) {
+            alert("Ошибка при определении местоположения: " + error.message);
+        }
+
+        function deleteMyData() {
+            fetch('/delete-logs', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    if(data.success) {
+                        alert("Ваши данные были удалены из логов!");
+                        document.getElementById('phishing-warning').style.display = 'none';
+                    } else {
+                        alert("Не удалось удалить данные");
+                    }
+                });
         }
     </script>
 </body>
@@ -320,35 +252,39 @@ def index():
     geo = get_ip_data(ip)
     os, browser, device = parse_user_agent(user_agent)
     
-    # Логируем базовую информацию
-    log_data(ip, user_agent, geo, os, browser, device)
+    consent_given = user_consents.get(ip, False)
     
-    return render_template_string(HTML_TEMPLATE,
-        ip=ip,
-        country=geo.get('country', 'Неизвестно'),
-        city=geo.get('city', 'Неизвестно'),
-        isp=geo.get('org', 'Неизвестно'),
-        os=os,
-        browser=browser,
-        device=device
-    )
+    if not consent_given:
+        log_data(ip, user_agent, geo, os, browser, device)
+    
+    return render_template_string(HTML_TEMPLATE, consent_given=consent_given)
 
-@app.route('/log_gps', methods=['POST'])
+@app.route('/give-consent', methods=['POST'])
+def give_consent():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_consents[ip] = True
+    return {'status': 'success'}
+
+@app.route('/log-gps', methods=['POST'])
 def log_gps():
-    data = request.json
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     user_agent = request.headers.get('User-Agent', 'Неизвестно')
     geo = get_ip_data(ip)
     os, browser, device = parse_user_agent(user_agent)
     
-    log_data(ip, user_agent, geo, os, browser, device, {
-        'lat': data.get('lat'),
-        'lon': data.get('lon'),
-        'acc': data.get('acc'),
-        'address': data.get('address')
-    })
+    log_data(ip, user_agent, geo, os, browser, device, request.json)
     
     return {'status': 'success'}
+
+@app.route('/delete-logs', methods=['POST'])
+def handle_delete_logs():
+    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    success = delete_user_logs(ip)
+    return {'success': success}
+
+@app.route('/deny')
+def deny():
+    return "Вы отказались от предоставления данных. Спасибо за визит!"
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
