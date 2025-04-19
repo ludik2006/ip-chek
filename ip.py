@@ -5,290 +5,211 @@ import re
 
 app = Flask(__name__)
 
-# Кэш для IP-данных
-ip_cache = {}
-
 def get_ip_data(ip):
-    if ip in ip_cache:
-        return ip_cache[ip]
-
     try:
         response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
-        geo = response.json()
-        data = {
-            "country": geo.get("country", "Неизвестно"),
-            "city": geo.get("city", "Неизвестно"),
-            "isp": geo.get("org", "Неизвестно")
-        }
-        ip_cache[ip] = data
-        return data
-    except Exception as e:
-        print(f"[Ошибка IPAPI]: {e}")
-        return {"country": "Ошибка", "city": "Ошибка", "isp": "Ошибка"}
-
-def parse_user_agent(user_agent):
-    # Обновлённые правила для Windows 11
-    os_patterns = [
-        (r'Windows 11', 'Windows 11'),
-        (r'Windows NT 10.0', 'Windows 10/11'),
-        (r'Linux x86_64', 'Linux (PC)'),
-        (r'Linux armv8l', 'Linux (Android)'),
-        (r'Android', 'Android'),
-        (r'iPhone|iPad|iPod', 'iOS'),
-        (r'Mac OS X', 'macOS')
-    ]
-
-    browser_patterns = [
-        (r'Edg', 'Microsoft Edge'),
-        (r'Chrome', 'Google Chrome'),
-        (r'Firefox', 'Mozilla Firefox'),
-        (r'Safari', 'Safari')
-    ]
-
-    # Определение ОС
-    os = "Неизвестно"
-    for pattern, name in os_patterns.items():
-        if re.search(pattern, user_agent):
-            os = name
-            break
-
-    # Дополнительная проверка для Windows 11
-    if os == "Windows 10/11":
-        if "Win64; x64" in user_agent and "Trident/7.0" not in user_agent:
-            os = "Windows 11"
-        else:
-            os = "Windows 10"
-
-    # Определение браузера
-    browser = "Неизвестно"
-    for pattern, name in browser_patterns.items():
-        if re.search(pattern, user_agent):
-            browser = name
-            break
-
-    # Тип устройства
-    if 'Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent:
-        device = "Смартфон/Планшет"
-    else:
-        device = "ПК"
-
-    return os, browser, device
+        return response.json()
+    except:
+        return {"error": "Не удалось получить данные"}
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Анализ устройства</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Точная геолокация</title>
     <style>
-        body { background-color: #111; color: #00FF88; font-family: Arial; margin: 0; padding: 20px; }
-        .container { background-color: rgba(0, 0, 0, 0.7); border-radius: 10px; padding: 20px; box-shadow: 0 0 20px rgba(0, 255, 136, 0.6); max-width: 800px; margin: 0 auto; }
-        h1 { text-align: center; }
-        .info-block { margin: 15px 0; padding: 10px; border-bottom: 1px solid #333; }
-        .warning { color: #FF5555; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 15px;
+            line-height: 1.6;
+        }
+        .info-block {
+            background: #f5f5f5;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        button {
+            background: #4285f4;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            width: 100%;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        #map {
+            height: 250px;
+            width: 100%;
+            border-radius: 12px;
+            margin-top: 15px;
+            border: 1px solid #ddd;
+        }
+        .accuracy {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #4285f4;
+            color: white;
+            border-radius: 10px;
+            font-size: 12px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>🔍 Полная информация об устройстве</h1>
-        
-        <div class="info-block">
-            <h2>🌍 Сеть и местоположение</h2>
-            <p><strong>IP:</strong> {{ ip }}</p>
-            <p><strong>Страна:</strong> {{ country }}</p>
-            <p><strong>Город:</strong> {{ city }}</p>
-            <p><strong>Провайдер:</strong> {{ isp }}</p>
-        </div>
+    <div class="info-block">
+        <h2>📍 Основная информация</h2>
+        <p><strong>IP:</strong> {{ ip }}</p>
+        <p><strong>Местоположение (по IP):</strong> {{ city }}, {{ country }}</p>
+    </div>
 
-        <div class="info-block">
-            <h2>💻 Система</h2>
-            <p><strong>ОС:</strong> <span id="os">{{ os }}</span></p>
-            <p><strong>Браузер:</strong> <span id="browser">{{ browser }}</span></p>
-            <p><strong>Устройство:</strong> <span id="device">{{ device }}</span></p>
-            <p><strong>Логические процессоры:</strong> <span id="cpuCores"></span> <span id="cpuWarning" class="warning"></span></p>
-            <p><strong>GPU:</strong> <span id="gpu"></span></p>
-        </div>
-
-        <div class="info-block">
-            <h2>🖥️ Экран</h2>
-            <p><strong>Разрешение:</strong> <span id="screenResolution"></span></p>
-            <p><strong>Глубина цвета:</strong> <span id="colorDepth"></span></p>
-        </div>
-
-        <div class="info-block">
-            <h2>🔋 Батарея</h2>
-            <p><strong>Заряд:</strong> <span id="batteryLevel"></span> <span id="batteryWarning" class="warning"></span></p>
-            <p><strong>Состояние:</strong> <span id="batteryCharging"></span></p>
-        </div>
-
-        <div class="info-block">
-            <h2>🔌 WebRTC (локальный IP)</h2>
-            <p><strong>Локальный IP:</strong> <span id="webrtcIp">Определяется...</span></p>
-        </div>
-
-        <div class="info-block">
-            <h2>🖋️ Установленные шрифты</h2>
-            <p><strong>Доступные шрифты:</strong> <span id="installedFonts">Определяется...</span></p>
-        </div>
-
-        <div class="info-block">
-            <h2>🖐️ Цифровой отпечаток</h2>
-            <p><strong>Canvas Fingerprint:</strong> <span id="fingerprint"></span></p>
-        </div>
+    <button onclick="getPreciseLocation()">Определить точное местоположение</button>
+    
+    <div id="loading" class="loading">
+        <p>Определение местоположения...</p>
+    </div>
+    
+    <div id="geoResult" class="info-block" style="display:none;">
+        <h2>🗺 Точные координаты</h2>
+        <div id="positionData"></div>
+        <div id="addressData"></div>
+        <div id="map"></div>
     </div>
 
     <script>
-        // Улучшенное определение процессора
-        function getCPUInfo() {
-            const cores = navigator.hardwareConcurrency;
-            let warning = "";
+        // Улучшенная геолокация для мобильных устройств
+        function getPreciseLocation() {
+            const loading = document.getElementById('loading');
+            const resultBlock = document.getElementById('geoResult');
             
-            // Предупреждение для мобильных устройств
-            if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
-                warning = " (мобильные процессоры показывают только кластеры)";
-            }
-            // Предупреждение для современных CPU
-            else if (cores >= 8) {
-                warning = " (возможно, учитываются только Performance-ядра)";
-            }
+            loading.style.display = 'block';
+            resultBlock.style.display = 'none';
             
-            document.getElementById('cpuCores').textContent = cores || "Неизвестно";
-            document.getElementById('cpuWarning').textContent = warning;
-        }
-
-        // Определение GPU
-        function getGPUInfo() {
-            if (navigator.gpu) {
-                navigator.gpu.requestAdapter()
-                    .then(adapter => {
-                        const info = adapter.info || {};
-                        document.getElementById('gpu').textContent = 
-                            info.description || "Неизвестно";
-                    })
-                    .catch(() => {
-                        document.getElementById('gpu').textContent = "Не удалось определить";
-                    });
-            } else {
-                document.getElementById('gpu').textContent = "API не поддерживается";
+            if (!navigator.geolocation) {
+                showError("Ваш браузер не поддерживает геолокацию");
+                return;
             }
-        }
 
-        // Альтернативный метод для батареи
-        function getBatteryInfo() {
-            if ('getBattery' in navigator) {
-                navigator.getBattery()
-                    .then(battery => {
-                        document.getElementById('batteryLevel').textContent = 
-                            Math.round(battery.level * 100) + "%";
-                        document.getElementById('batteryCharging').textContent = 
-                            battery.charging ? "Заряжается" : "Не заряжается";
-                    })
-                    .catch(() => {
-                        showBatteryWarning();
-                    });
-            } else {
-                showBatteryWarning();
-            }
-        }
-
-        function showBatteryWarning() {
-            document.getElementById('batteryLevel').textContent = "Недоступно";
-            document.getElementById('batteryWarning').textContent = 
-                " (требуется HTTPS или специальные разрешения)";
-        }
-
-        // Инициализация всех функций
-        window.onload = function() {
-            // Системная информация
-            getCPUInfo();
-            getGPUInfo();
-            document.getElementById('screenResolution').textContent = 
-                window.screen.width + "x" + window.screen.height;
-            document.getElementById('colorDepth').textContent = 
-                window.screen.colorDepth + " бит";
-
-            // Батарея
-            getBatteryInfo();
-
-            // WebRTC IP
-            const rtc = new RTCPeerConnection({ 
-                iceServers: [{ urls: "stun:stun.l.google.com:19302" }] 
-            });
-            rtc.createDataChannel("");
-            rtc.onicecandidate = e => {
-                if (e.candidate) {
-                    const ipRegex = /([0-9]{1,3}(\.[0-9]{1,3}){3})/;
-                    const ipMatch = e.candidate.candidate.match(ipRegex);
-                    if (ipMatch) {
-                        document.getElementById('webrtcIp').textContent = ipMatch[1];
-                        rtc.close();
-                    }
-                }
+            const options = {
+                enableHighAccuracy: true,  // Используем GPS на мобильных
+                timeout: 10000,           // 10 секунд ожидания
+                maximumAge: 0             // Не использовать кешированные данные
             };
-            rtc.createOffer().then(offer => rtc.setLocalDescription(offer));
 
-            // Шрифты
-            const fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia"];
-            const availableFonts = [];
-            const canvas = document.createElement("canvas");
-            const context = canvas.getContext("2d");
+            navigator.geolocation.getCurrentPosition(
+                position => {
+                    loading.style.display = 'none';
+                    resultBlock.style.display = 'block';
+                    showPrecisePosition(position);
+                },
+                error => {
+                    loading.style.display = 'none';
+                    handleGeolocationError(error);
+                },
+                options
+            );
+        }
+
+        function showPrecisePosition(position) {
+            const lat = position.coords.latitude;
+            const lon = position.coords.longitude;
+            const acc = position.coords.accuracy;
             
-            fonts.forEach(font => {
-                context.font = `12px "${font}"`;
-                if (context.measureText("test").width > 0) availableFonts.push(font);
-            });
-            document.getElementById('installedFonts').textContent = 
-                availableFonts.join(", ") || "Неизвестно";
+            document.getElementById('positionData').innerHTML = `
+                <p><strong>Широта:</strong> ${lat.toFixed(6)}</p>
+                <p><strong>Долгота:</strong> ${lon.toFixed(6)}</p>
+                <p><strong>Точность:</strong> <span class="accuracy">±${Math.round(acc)} метров</span></p>
+            `;
 
-            // Canvas Fingerprinting
-            const fingerprintCanvas = document.createElement("canvas");
-            const fingerprintCtx = fingerprintCanvas.getContext("2d");
-            fingerprintCtx.fillStyle = "rgb(128, 0, 128)";
-            fingerprintCtx.fillRect(0, 0, 100, 50);
-            fingerprintCtx.fillStyle = "rgb(255, 255, 0)";
-            fingerprintCtx.font = "18px Arial";
-            fingerprintCtx.fillText("Fingerprint", 10, 30);
-            document.getElementById('fingerprint').textContent = 
-                fingerprintCanvas.toDataURL().slice(-32);
-        };
+            // Используем Mapbox для лучшего отображения на мобильных
+            showMapboxMap(lat, lon);
+            
+            // Получаем детализированный адрес
+            getReverseGeocoding(lat, lon);
+        }
+
+        function showMapboxMap(lat, lon) {
+            // Бесплатный ключ для демонстрации (ограничение 50,000 запросов/месяц)
+            const mapboxToken = 'pk.eyJ1IjoibWFwYm94IiwiYSI6ImNpejY4NXVycTA2emYycXBndHRqcmZ3N3gifQ.rJcFIG214AriISLbB6B5aw';
+            
+            document.getElementById('map').innerHTML = `
+                <iframe
+                    width="100%"
+                    height="100%"
+                    frameborder="0"
+                    scrolling="no"
+                    marginheight="0"
+                    marginwidth="0"
+                    src="https://api.mapbox.com/styles/v1/mapbox/streets-v11.html?title=false&access_token=${mapboxToken}&zoom=15&center=${lon},${lat}&marker=${lon},${lat}"
+                ></iframe>
+            `;
+        }
+
+        function getReverseGeocoding(lat, lon) {
+            // Используем OpenStreetMap Nominatim API
+            fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`)
+                .then(response => response.json())
+                .then(data => {
+                    const address = data.address || {};
+                    let addressStr = '';
+                    
+                    if (address.road) addressStr += `${address.road}`;
+                    if (address.house_number) addressStr += `, ${address.house_number}`;
+                    if (addressStr === '') addressStr = 'Адрес не определён';
+                    
+                    document.getElementById('addressData').innerHTML = `
+                        <p><strong>Примерный адрес:</strong> ${addressStr}</p>
+                        ${address.city ? `<p><strong>Город:</strong> ${address.city}</p>` : ''}
+                        ${address.country ? `<p><strong>Страна:</strong> ${address.country}</p>` : ''}
+                    `;
+                })
+                .catch(() => {
+                    document.getElementById('addressData').innerHTML = 
+                        '<p>Не удалось определить адрес</p>';
+                });
+        }
+
+        function handleGeolocationError(error) {
+            let message;
+            switch(error.code) {
+                case error.PERMISSION_DENIED:
+                    message = "Вы отказали в доступе к геолокации. Разрешите доступ в настройках браузера.";
+                    break;
+                case error.POSITION_UNAVAILABLE:
+                    message = "Информация о местоположении недоступна. Проверьте подключение к интернету и GPS.";
+                    break;
+                case error.TIMEOUT:
+                    message = "Время ожидания истекло. Убедитесь, что GPS включён.";
+                    break;
+                default:
+                    message = "Произошла неизвестная ошибка при определении местоположения.";
+            }
+            alert(message);
+        }
     </script>
 </body>
 </html>
 """
 
 @app.route('/')
-def show_ip():
+def index():
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    user_agent = request.headers.get('User-Agent', "Неизвестно")
-    os, browser, device = parse_user_agent(user_agent)
     geo = get_ip_data(ip)
     
-    # Логирование в файл
-    log_entry = f"""
-=== Новый вход ===
-Время: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-IP: {ip}
-Страна: {geo['country']}
-Город: {geo['city']}
-Провайдер: {geo['isp']}
-ОС: {os}
-Браузер: {browser}
-Устройство: {device}
-User-Agent: {user_agent}
-------------------------------------
-"""
-    with open("ips.log", "a", encoding="utf-8") as f:
-        f.write(log_entry)
-    
     return render_template_string(HTML_TEMPLATE,
-                                ip=ip,
-                                country=geo['country'],
-                                city=geo['city'],
-                                isp=geo['isp'],
-                                os=os,
-                                browser=browser,
-                                device=device)
+        ip=ip,
+        country=geo.get('country', 'Неизвестно'),
+        city=geo.get('city', 'Неизвестно')
+    )
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5050)
+    app.run(host='0.0.0.0', port=5000, debug=True)
