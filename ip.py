@@ -2,26 +2,33 @@ from flask import Flask, request, render_template_string, make_response
 import requests
 from datetime import datetime
 import re
-import os
 import json
 
 app = Flask(__name__)
 
-# Конфигурация
-LOG_FILE = "user_logs.json"
-COOKIE_NAME = "data_consent"
+# Кэш для IP-данных
+ip_cache = {}
+COOKIE_CONSENT = "cookie_consent"
 
 def get_ip_data(ip):
+    if ip in ip_cache:
+        return ip_cache[ip]
+
     try:
         response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
-        return response.json()
-    except:
-        return {"error": "Не удалось получить данные"}
+        geo = response.json()
+        data = {
+            "country": geo.get("country", "Неизвестно"),
+            "city": geo.get("city", "Неизвестно"),
+            "isp": geo.get("org", "Неизвестно")
+        }
+        ip_cache[ip] = data
+        return data
+    except Exception as e:
+        print(f"[Ошибка IPAPI]: {e}")
+        return {"country": "Ошибка", "city": "Ошибка", "isp": "Ошибка"}
 
-def get_device_info(user_agent):
-    # Анализ User-Agent
-    os = browser = "Неизвестно"
-    
+def parse_user_agent(user_agent):
     os_patterns = {
         'Windows 11': r'Windows NT 10.0; Win64; x64',
         'Windows 10': r'Windows NT 10.0',
@@ -30,11 +37,6 @@ def get_device_info(user_agent):
         'iOS': r'iPhone|iPad|iPod',
         'Mac OS X': r'Macintosh'
     }
-    
-    for name, pattern in os_patterns.items():
-        if re.search(pattern, user_agent):
-            os = name
-            break
 
     browser_patterns = {
         'Chrome': r'Chrome',
@@ -42,55 +44,25 @@ def get_device_info(user_agent):
         'Safari': r'Safari',
         'Edge': r'Edg'
     }
-    
+
+    # Определение ОС
+    os = "Неизвестно"
+    for name, pattern in os_patterns.items():
+        if re.search(pattern, user_agent):
+            os = name
+            break
+
+    # Определение браузера
+    browser = "Неизвестно"
     for name, pattern in browser_patterns.items():
         if re.search(pattern, user_agent):
             browser = name
             break
 
+    # Тип устройства
     device = "Смартфон/Планшет" if ('Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent) else "Компьютер"
 
-    return {
-        "os": os,
-        "browser": browser,
-        "device": device,
-        "cpu_cores": navigator.hardwareConcurrency if 'navigator' in globals() else "Неизвестно"
-    }
-
-def log_user_data(ip, user_data):
-    # Загрузка существующих логов
-    logs = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r") as f:
-            try:
-                logs = json.load(f)
-            except:
-                pass
-    
-    # Добавление новых данных
-    logs.append({
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ip": ip,
-        **user_data
-    })
-    
-    # Сохранение
-    with open(LOG_FILE, "w") as f:
-        json.dump(logs, f, indent=2)
-
-def delete_user_data(ip):
-    if not os.path.exists(LOG_FILE):
-        return False
-
-    with open(LOG_FILE, "r") as f:
-        logs = json.load(f)
-
-    new_logs = [entry for entry in logs if entry.get("ip") != ip]
-
-    with open(LOG_FILE, "w") as f:
-        json.dump(new_logs, f, indent=2)
-
-    return len(logs) != len(new_logs)
+    return os, browser, device
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -98,151 +70,326 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Сервис аналитики</title>
+    <title>Анализ устройства</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            line-height: 1.6;
+        body { 
+            background-color: #111; 
+            color: #00FF88; 
+            font-family: Arial; 
+            margin: 0; 
+            padding: 0;
         }
-        .cookie-banner {
+        .container { 
+            background-color: rgba(0, 0, 0, 0.7); 
+            border-radius: 10px; 
+            padding: 20px; 
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.6); 
+            max-width: 800px; 
+            margin: 20px auto;
+        }
+        h1 { text-align: center; }
+        .info-block { 
+            margin: 15px 0; 
+            padding: 10px; 
+            border-bottom: 1px solid #333; 
+        }
+        .warning { color: #FF5555; }
+        
+        /* Стили для модального окна */
+        #consentModal {
             position: fixed;
-            bottom: 0;
+            top: 0;
             left: 0;
-            right: 0;
-            background: #f1f1f1;
-            padding: 15px;
-            box-shadow: 0 -2px 10px rgba(0,0,0,0.1);
-            z-index: 1000;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.9);
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
-        }
-        .cookie-banner p {
-            margin: 0;
-            flex-grow: 1;
-        }
-        .cookie-btn {
-            background: #4CAF50;
+            z-index: 1000;
             color: white;
+            text-align: center;
+        }
+        .consent-box {
+            background-color: #222;
+            padding: 30px;
+            border-radius: 10px;
+            max-width: 600px;
+        }
+        .consent-buttons {
+            margin-top: 20px;
+        }
+        .consent-btn {
+            padding: 10px 20px;
+            margin: 0 10px;
             border: none;
-            padding: 8px 16px;
-            margin-left: 10px;
-            border-radius: 4px;
+            border-radius: 5px;
             cursor: pointer;
+            font-size: 16px;
         }
-        .cookie-btn.deny {
-            background: #f44336;
+        .accept-btn {
+            background-color: #00AA00;
+            color: white;
         }
-        .info-block {
-            background: #f9f9f9;
-            border-radius: 8px;
+        .reject-btn {
+            background-color: #AA0000;
+            color: white;
+        }
+        
+        /* Стили для уведомления о куки */
+        #cookieNotice {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background-color: #333;
             padding: 15px;
-            margin-bottom: 15px;
-        }
-        .warning-box {
-            background: #fff3e0;
-            border-left: 4px solid #ff9800;
-            padding: 15px;
-            margin-top: 30px;
-        }
-        #userData {
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.5);
+            z-index: 1001;
             display: none;
         }
     </style>
 </head>
 <body>
-    <div id="userData">
-        <h1>Ваши технические данные</h1>
-        
-        <div class="info-block">
-            <h3>🌐 Сетевая информация</h3>
-            <p><strong>IP-адрес:</strong> <span id="ip"></span></p>
-            <p><strong>Местоположение (IP):</strong> <span id="ipLocation"></span></p>
-            <p><strong>Точные координаты:</strong> <span id="gpsCoords"></span></p>
-            <p><strong>Точность:</strong> <span id="gpsAccuracy"></span></p>
-        </div>
-
-        <div class="info-block">
-            <h3>💻 Системная информация</h3>
-            <p><strong>ОС:</strong> <span id="os"></span></p>
-            <p><strong>Браузер:</strong> <span id="browser"></span></p>
-            <p><strong>Устройство:</strong> <span id="device"></span></p>
-            <p><strong>Ядер CPU:</strong> <span id="cpuCores"></span></p>
-        </div>
-
-        <div class="warning-box">
-            <h3>⚠️ Важное предупреждение</h3>
-            <p>Вы только что стали жертвой учебной фишинговой атаки. Нажав "Принять" в cookie-баннере, вы добровольно предоставили доступ к своим данным.</p>
-            <p><strong>Урок безопасности:</strong> Всегда внимательно читайте, кому вы даёте доступ к вашей информации!</p>
-            <button onclick="deleteMyData()" style="background: #ff9800; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Удалить мои данные</button>
+    <!-- Модальное окно согласия -->
+    <div id="consentModal">
+        <div class="consent-box">
+            <h1>Добро пожаловать!</h1>
+            <p>Для продолжения работы с сайтом необходимо согласиться на использование cookies и сбор данных.</p>
+            <p>Нажимая "Принять", вы разрешаете нам собирать информацию о вашем устройстве и местоположении.</p>
+            <div class="consent-buttons">
+                <button class="consent-btn accept-btn" onclick="acceptConsent()">Принять</button>
+                <button class="consent-btn reject-btn" onclick="rejectConsent()">Отклонить</button>
+            </div>
         </div>
     </div>
 
-    <div id="cookieBanner" class="cookie-banner">
-        <p>Мы используем cookies для анализа данных. Продолжая использовать сайт, вы соглашаетесь на сбор информации о вашем устройстве и местоположении.</p>
-        <div>
-            <button class="cookie-btn deny" onclick="denyConsent()">Отклонить</button>
-            <button class="cookie-btn" onclick="acceptConsent()">Принять</button>
+    <!-- Уведомление о куки -->
+    <div id="cookieNotice">
+        <p>Разрешаете ли вы использование cookie-файлов?</p>
+        <button onclick="confirmCookies()">Разрешить</button>
+        <button onclick="hideCookieNotice()">Отклонить</button>
+    </div>
+
+    <!-- Основной контент (скрыт до согласия) -->
+    <div id="mainContent" style="display: none;">
+        <div class="container">
+            <h1>🔍 Полная информация об устройстве</h1>
+            
+            <div class="info-block">
+                <h2>🌍 Сеть и местоположение</h2>
+                <p><strong>IP:</strong> {{ ip }}</p>
+                <p><strong>Страна:</strong> {{ country }}</p>
+                <p><strong>Город:</strong> {{ city }}</p>
+                <p><strong>Провайдер:</strong> {{ isp }}</p>
+                <div id="gpsData" style="display: none;">
+                    <p><strong>Точные координаты:</strong> <span id="coordinates"></span></p>
+                    <p><strong>Адрес:</strong> <span id="address"></span></p>
+                    <div id="map" style="height: 300px; margin-top: 15px;"></div>
+                </div>
+            </div>
+
+            <div class="info-block">
+                <h2>💻 Система</h2>
+                <p><strong>ОС:</strong> <span id="os">{{ os }}</span></p>
+                <p><strong>Браузер:</strong> <span id="browser">{{ browser }}</span></p>
+                <p><strong>Устройство:</strong> <span id="device">{{ device }}</span></p>
+                <p><strong>Логические процессоры:</strong> <span id="cpuCores"></span> <span id="cpuWarning" class="warning"></span></p>
+                <p><strong>GPU:</strong> <span id="gpu"></span></p>
+            </div>
+
+            <div class="info-block">
+                <h2>🖥️ Экран</h2>
+                <p><strong>Разрешение:</strong> <span id="screenResolution"></span></p>
+                <p><strong>Глубина цвета:</strong> <span id="colorDepth"></span></p>
+            </div>
+
+            <div class="info-block">
+                <h2>🔋 Батарея</h2>
+                <p><strong>Заряд:</strong> <span id="batteryLevel"></span> <span id="batteryWarning" class="warning"></span></p>
+                <p><strong>Состояние:</strong> <span id="batteryCharging"></span></p>
+            </div>
+
+            <div class="info-block">
+                <h2>🔌 WebRTC (локальный IP)</h2>
+                <p><strong>Локальный IP:</strong> <span id="webrtcIp">Определяется...</span></p>
+            </div>
+
+            <div class="info-block">
+                <h2>🖋️ Установленные шрифты</h2>
+                <p><strong>Доступные шрифты:</strong> <span id="installedFonts">Определяется...</span></p>
+            </div>
+
+            <div class="info-block">
+                <h2>🖐️ Цифровой отпечаток</h2>
+                <p><strong>Canvas Fingerprint:</strong> <span id="fingerprint"></span></p>
+            </div>
+
+            <div class="info-block warning">
+                <h2>⚠️ Внимание!</h2>
+                <p>Вы только что стали жертвой учебной фишинговой атаки. Нажав "Принять", вы добровольно передали свои данные.</p>
+                <p><strong>Урок безопасности:</strong> Всегда проверяйте, кому вы даёте доступ к вашей информации!</p>
+                <button onclick="deleteMyData()" style="background: #ff9800; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">Удалить мои данные</button>
+            </div>
         </div>
     </div>
 
     <script>
-        // Проверяем, есть ли уже согласие
-        if (document.cookie.includes("{{ COOKIE_NAME }}=true")) {
-            document.getElementById('cookieBanner').style.display = 'none';
-            loadUserData();
+        // Проверяем, дал ли пользователь согласие
+        function checkConsent() {
+            return document.cookie.includes("{{ COOKIE_CONSENT }}=true");
+        }
+
+        // Показываем модальное окно, если нет согласия
+        if (!checkConsent()) {
+            document.getElementById('consentModal').style.display = 'flex';
+        } else {
+            document.getElementById('mainContent').style.display = 'block';
+            loadAllData();
         }
 
         function acceptConsent() {
-            // Устанавливаем куку на 1 год
-            document.cookie = "{{ COOKIE_NAME }}=true; max-age=31536000; path=/";
-            document.getElementById('cookieBanner').style.display = 'none';
+            // Устанавливаем куки на 30 дней
+            const date = new Date();
+            date.setTime(date.getTime() + (30 * 24 * 60 * 60 * 1000));
+            document.cookie = "{{ COOKIE_CONSENT }}=true; expires=" + date.toUTCString() + "; path=/";
             
-            // Сразу начинаем сбор данных
-            loadUserData();
+            document.getElementById('consentModal').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'block';
+            document.getElementById('cookieNotice').style.display = 'block';
         }
 
-        function denyConsent() {
-            window.location.href = "/deny";
+        function rejectConsent() {
+            window.location.href = "https://www.google.com";
         }
 
-        function loadUserData() {
-            // Показываем блок с данными
-            document.getElementById('userData').style.display = 'block';
-            
-            // Получаем IP и базовые данные
-            fetch('/get-ip')
-                .then(response => response.json())
-                .then(data => {
-                    document.getElementById('ip').textContent = data.ip;
-                    document.getElementById('ipLocation').textContent = 
-                        `${data.city || 'Неизвестно'}, ${data.country || 'Неизвестно'}`;
-                    
-                    // Получаем точные координаты
-                    getGeolocation(data.ip);
-                });
-            
-            // Заполняем системную информацию
-            const deviceInfo = getDeviceInfo();
-            document.getElementById('os').textContent = deviceInfo.os;
-            document.getElementById('browser').textContent = deviceInfo.browser;
-            document.getElementById('device').textContent = deviceInfo.device;
-            document.getElementById('cpuCores').textContent = deviceInfo.cpu_cores;
+        function confirmCookies() {
+            document.getElementById('cookieNotice').style.display = 'none';
+            loadAllData();
         }
 
-        function getDeviceInfo() {
-            return {
-                os: navigator.platform,
-                browser: navigator.userAgent,
-                device: /Mobi|Android|iPhone/i.test(navigator.userAgent) ? "Мобильное" : "Компьютер",
-                cpu_cores: navigator.hardwareConcurrency || "Неизвестно"
+        function hideCookieNotice() {
+            document.getElementById('cookieNotice').style.display = 'none';
+        }
+
+        function loadAllData() {
+            // Загружаем все данные
+            getCPUInfo();
+            getGPUInfo();
+            getScreenInfo();
+            getBatteryInfo();
+            getWebRTCIP();
+            getFonts();
+            getFingerprint();
+            getLocation();
+        }
+
+        function getCPUInfo() {
+            const cores = navigator.hardwareConcurrency;
+            let warning = "";
+            
+            if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+                warning = " (мобильные процессоры показывают только кластеры)";
+            }
+            else if (cores >= 8) {
+                warning = " (возможно, учитываются только Performance-ядра)";
+            }
+            
+            document.getElementById('cpuCores').textContent = cores || "Неизвестно";
+            document.getElementById('cpuWarning').textContent = warning;
+        }
+
+        function getGPUInfo() {
+            if (navigator.gpu) {
+                navigator.gpu.requestAdapter()
+                    .then(adapter => {
+                        const info = adapter.info || {};
+                        document.getElementById('gpu').textContent = 
+                            info.description || "Неизвестно";
+                    })
+                    .catch(() => {
+                        document.getElementById('gpu').textContent = "Не удалось определить";
+                    });
+            } else {
+                document.getElementById('gpu').textContent = "API не поддерживается";
+            }
+        }
+
+        function getScreenInfo() {
+            document.getElementById('screenResolution').textContent = 
+                window.screen.width + "x" + window.screen.height;
+            document.getElementById('colorDepth').textContent = 
+                window.screen.colorDepth + " бит";
+        }
+
+        function getBatteryInfo() {
+            if ('getBattery' in navigator) {
+                navigator.getBattery()
+                    .then(battery => {
+                        document.getElementById('batteryLevel').textContent = 
+                            Math.round(battery.level * 100) + "%";
+                        document.getElementById('batteryCharging').textContent = 
+                            battery.charging ? "Заряжается" : "Не заряжается";
+                    })
+                    .catch(() => {
+                        showBatteryWarning();
+                    });
+            } else {
+                showBatteryWarning();
+            }
+        }
+
+        function showBatteryWarning() {
+            document.getElementById('batteryLevel').textContent = "Недоступно";
+            document.getElementById('batteryWarning').textContent = 
+                " (требуется HTTPS или специальные разрешения)";
+        }
+
+        function getWebRTCIP() {
+            const rtc = new RTCPeerConnection({ 
+                iceServers: [{ urls: "stun:stun.l.google.com:19302" }] 
+            });
+            rtc.createDataChannel("");
+            rtc.onicecandidate = e => {
+                if (e.candidate) {
+                    const ipRegex = /([0-9]{1,3}(\.[0-9]{1,3}){3})/;
+                    const ipMatch = e.candidate.candidate.match(ipRegex);
+                    if (ipMatch) {
+                        document.getElementById('webrtcIp').textContent = ipMatch[1];
+                        rtc.close();
+                    }
+                }
             };
+            rtc.createOffer().then(offer => rtc.setLocalDescription(offer));
         }
 
-        function getGeolocation(ip) {
+        function getFonts() {
+            const fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia"];
+            const availableFonts = [];
+            const canvas = document.createElement("canvas");
+            const context = canvas.getContext("2d");
+            
+            fonts.forEach(font => {
+                context.font = `12px "${font}"`;
+                if (context.measureText("test").width > 0) availableFonts.push(font);
+            });
+            document.getElementById('installedFonts').textContent = 
+                availableFonts.join(", ") || "Неизвестно";
+        }
+
+        function getFingerprint() {
+            const fingerprintCanvas = document.createElement("canvas");
+            const fingerprintCtx = fingerprintCanvas.getContext("2d");
+            fingerprintCtx.fillStyle = "rgb(128, 0, 128)";
+            fingerprintCtx.fillRect(0, 0, 100, 50);
+            fingerprintCtx.fillStyle = "rgb(255, 255, 0)";
+            fingerprintCtx.font = "18px Arial";
+            fingerprintCtx.fillText("Fingerprint", 10, 30);
+            document.getElementById('fingerprint').textContent = 
+                fingerprintCanvas.toDataURL().slice(-32);
+        }
+
+        function getLocation() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     position => {
@@ -250,42 +397,57 @@ HTML_TEMPLATE = """
                         const lon = position.coords.longitude;
                         const acc = position.coords.accuracy;
                         
-                        document.getElementById('gpsCoords').textContent = 
-                            `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
-                        document.getElementById('gpsAccuracy').textContent = 
-                            `±${Math.round(acc)} метров`;
+                        document.getElementById('coordinates').textContent = 
+                            `${lat.toFixed(6)}, ${lon.toFixed(6)} (точность: ±${Math.round(acc)} м)`;
                         
-                        // Отправляем данные на сервер
-                        fetch('/log-gps', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                lat: lat,
-                                lon: lon,
-                                acc: acc,
-                                ip: ip
-                            })
-                        });
+                        // Получаем адрес
+                        fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}`)
+                            .then(response => response.json())
+                            .then(data => {
+                                const address = data.address || {};
+                                document.getElementById('address').textContent = 
+                                    `${address.road || ''} ${address.house_number || ''}, ${address.city || address.town || address.village || ''}`;
+                                
+                                // Показываем карту
+                                showMap(lat, lon);
+                            });
+                        
+                        document.getElementById('gpsData').style.display = 'block';
                     },
                     error => {
-                        document.getElementById('gpsCoords').textContent = 
-                            "Доступ запрещен";
+                        console.error("Ошибка геолокации:", error);
                     },
                     { enableHighAccuracy: true }
                 );
             }
         }
 
+        function showMap(lat, lon) {
+            document.getElementById('map').innerHTML = `
+                <iframe
+                    width="100%"
+                    height="100%"
+                    frameborder="0"
+                    scrolling="no"
+                    marginheight="0"
+                    marginwidth="0"
+                    src="https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01}%2C${lat-0.01}%2C${lon+0.01}%2C${lat+0.01}&amp;layer=mapnik&amp;marker=${lat}%2C${lon}"
+                ></iframe>`;
+        }
+
         function deleteMyData() {
-            fetch('/delete-data', { method: 'POST' })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        alert("Ваши данные были удалены!");
-                    } else {
-                        alert("Не удалось удалить данные");
-                    }
-                });
+            fetch('/delete-data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    alert("Ваши данные были удалены!");
+                } else {
+                    alert("Не удалось удалить данные");
+                }
+            });
         }
     </script>
 </body>
@@ -293,52 +455,62 @@ HTML_TEMPLATE = """
 """
 
 @app.route('/')
-def index():
-    consent = request.cookies.get(COOKIE_NAME) == 'true'
-    return render_template_string(HTML_TEMPLATE, COOKIE_NAME=COOKIE_NAME)
+def show_ip():
+    consent = request.cookies.get(COOKIE_CONSENT)
+    if not consent:
+        return render_template_string(HTML_TEMPLATE, COOKIE_CONSENT=COOKIE_CONSENT)
 
-@app.route('/get-ip')
-def get_ip():
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    user_agent = request.headers.get('User-Agent', "Неизвестно")
+    os, browser, device = parse_user_agent(user_agent)
     geo = get_ip_data(ip)
-    return {
+    
+    # Логирование в файл
+    log_entry = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": ip,
-        "country": geo.get("country", "Неизвестно"),
-        "city": geo.get("city", "Неизвестно")
-    }
-
-@app.route('/log-gps', methods=['POST'])
-def log_gps():
-    data = request.json
-    ip = data.get('ip', request.headers.get('X-Forwarded-For', request.remote_addr))
-    user_agent = request.headers.get('User-Agent', 'Неизвестно')
-    
-    device_info = {
-        "os": "Неизвестно",
-        "browser": "Неизвестно",
-        "device": "Неизвестно",
-        "cpu_cores": "Неизвестно",
-        "location": {
-            "lat": data.get('lat'),
-            "lon": data.get('lon'),
-            "accuracy": data.get('acc')
-        }
+        "country": geo['country'],
+        "city": geo['city'],
+        "isp": geo['isp'],
+        "os": os,
+        "browser": browser,
+        "device": device,
+        "user_agent": user_agent
     }
     
-    log_user_data(ip, device_info)
-    return {'status': 'success'}
+    with open("user_logs.json", "a") as f:
+        f.write(json.dumps(log_entry) + "\n")
+    
+    return render_template_string(HTML_TEMPLATE,
+                                ip=ip,
+                                country=geo['country'],
+                                city=geo['city'],
+                                isp=geo['isp'],
+                                os=os,
+                                browser=browser,
+                                device=device,
+                                COOKIE_CONSENT=COOKIE_CONSENT)
 
 @app.route('/delete-data', methods=['POST'])
 def delete_data():
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    success = delete_user_data(ip)
-    return {'success': success}
-
-@app.route('/deny')
-def deny():
-    resp = make_response("Вы отказались от сбора данных. Спасибо за визит!")
-    resp.set_cookie(COOKIE_NAME, 'false', max_age=31536000)
-    return resp
+    try:
+        # Читаем все логи
+        with open("user_logs.json", "r") as f:
+            logs = [json.loads(line) for line in f.readlines() if line.strip()]
+        
+        # Фильтруем логи, удаляя записи с текущим IP
+        new_logs = [log for log in logs if log.get('ip') != ip]
+        
+        # Перезаписываем файл
+        with open("user_logs.json", "w") as f:
+            for log in new_logs:
+                f.write(json.dumps(log) + "\n")
+        
+        return {'success': True}
+    except Exception as e:
+        print(f"Ошибка при удалении данных: {e}")
+        return {'success': False}, 500
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(host='0.0.0.0', port=5050, debug=True)
