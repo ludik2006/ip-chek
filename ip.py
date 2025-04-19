@@ -1,46 +1,71 @@
 from flask import Flask, request, render_template_string
 import requests
+from datetime import datetime
 import re
+import json
 
 app = Flask(__name__)
 
+# Кэш для IP-данных
+ip_cache = {}
+
 def get_ip_data(ip):
+    if ip in ip_cache:
+        return ip_cache[ip]
+
     try:
         response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
         geo = response.json()
-        return {
+        data = {
             "country": geo.get("country", "Неизвестно"),
             "city": geo.get("city", "Неизвестно"),
             "isp": geo.get("org", "Неизвестно")
         }
-    except:
+        ip_cache[ip] = data
+        return data
+    except Exception as e:
+        print(f"[Ошибка IPAPI]: {e}")
         return {"country": "Ошибка", "city": "Ошибка", "isp": "Ошибка"}
 
 def parse_user_agent(user_agent):
-    os_patterns = {
-        'Windows 10': r'Windows NT 10.0',
-        'Windows 11': r'Windows NT 11.0',
-        'Mac OS X': r'Mac OS X',
-        'Linux': r'Linux',
-        'Android': r'Android',
-        'iOS': r'iPhone|iPad|iPod'
-    }
-    
-    browser_patterns = {
-        'Chrome': r'Chrome',
-        'Firefox': r'Firefox',
-        'Safari': r'Safari',
-        'Edge': r'Edg'
-    }
-    
-    os = next((name for name, pattern in os_patterns.items() 
-               if re.search(pattern, user_agent)), "Неизвестно")
-    
-    browser = next((name for name, pattern in browser_patterns.items() 
-                   if re.search(pattern, user_agent)), "Неизвестно")
-    
-    device = "Смартфон/Планшет" if ('Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent) else "ПК"
-    
+    # Обновлённые регулярные выражения для точного определения ОС
+    os_patterns = [
+        (r'Windows NT 11.0', 'Windows 11'),
+        (r'Windows NT 10.0', 'Windows 10'),
+        (r'Linux x86_64', 'Linux (PC)'),
+        (r'Linux armv8l', 'Linux (Android)'),
+        (r'Android', 'Android'),
+        (r'iPhone|iPad|iPod', 'iOS'),
+        (r'Mac OS X', 'macOS')
+    ]
+
+    browser_patterns = [
+        (r'Edg', 'Microsoft Edge'),
+        (r'Chrome', 'Google Chrome'),
+        (r'Firefox', 'Mozilla Firefox'),
+        (r'Safari', 'Safari')
+    ]
+
+    # Определение ОС
+    os = "Неизвестно"
+    for pattern, name in os_patterns:
+        if re.search(pattern, user_agent):
+            os = name
+            break
+
+    # Определение браузера
+    browser = "Неизвестно"
+    for pattern, name in browser_patterns:
+        if re.search(pattern, user_agent):
+            browser = name
+            break
+
+    # Тип устройства
+    if 'Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent:
+        device = "Смартфон/Планшет"
+    else:
+        device = "ПК"
+
     return os, browser, device
 
 HTML_TEMPLATE = """
@@ -178,6 +203,23 @@ def show_ip():
     user_agent = request.headers.get('User-Agent', "Неизвестно")
     os, browser, device = parse_user_agent(user_agent)
     geo = get_ip_data(ip)
+    
+    # Логирование в файл
+    log_entry = f"""
+=== Новый вход ===
+Время: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+IP: {ip}
+Страна: {geo['country']}
+Город: {geo['city']}
+Провайдер: {geo['isp']}
+ОС: {os}
+Браузер: {browser}
+Устройство: {device}
+User-Agent: {user_agent}
+------------------------------------
+"""
+    with open("ips.log", "a", encoding="utf-8") as f:
+        f.write(log_entry)
     
     return render_template_string(HTML_TEMPLATE,
                                 ip=ip,
