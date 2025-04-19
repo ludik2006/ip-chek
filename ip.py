@@ -28,10 +28,10 @@ def get_ip_data(ip):
         return {"country": "Ошибка", "city": "Ошибка", "isp": "Ошибка"}
 
 def parse_user_agent(user_agent):
-    # Обновлённые регулярные выражения для точного определения ОС
+    # Обновлённые правила для Windows 11
     os_patterns = [
-        (r'Windows NT 11.0', 'Windows 11'),
-        (r'Windows NT 10.0', 'Windows 10'),
+        (r'Windows 11', 'Windows 11'),
+        (r'Windows NT 10.0', 'Windows 10/11'),
         (r'Linux x86_64', 'Linux (PC)'),
         (r'Linux armv8l', 'Linux (Android)'),
         (r'Android', 'Android'),
@@ -52,6 +52,14 @@ def parse_user_agent(user_agent):
         if re.search(pattern, user_agent):
             os = name
             break
+
+    # Дополнительная проверка для Windows 11
+    if os == "Windows 10/11":
+        # Проверяем дополнительные признаки Windows 11
+        if "Win64; x64" in user_agent and "Trident/7.0" not in user_agent:
+            os = "Windows 11"
+        else:
+            os = "Windows 10"
 
     # Определение браузера
     browser = "Неизвестно"
