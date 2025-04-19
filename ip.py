@@ -10,18 +10,28 @@ app = Flask(__name__)
 # Настройки
 LOG_FILE = "user_data.log"
 COOKIE_NAME = "user_consent"
-GEOLOCATION_REQUESTED_FLAG = "geolocation_requested"
 
 def get_ip_data(ip):
     try:
+        if ip.startswith(('127.', '10.', '192.168.', '172.')):
+            return {"country": "Локальная сеть", "city": "Локальная сеть", "org": "Локальная сеть"}
+        
         response = requests.get(f"https://ipinfo.io/{ip}/json", timeout=5)
-        return response.json()
-    except:
+        if response.status_code == 200:
+            return response.json()
+        return {"country": "Неизвестно", "city": "Неизвестно", "org": "Неизвестно"}
+    except Exception as e:
+        print(f"Ошибка получения данных IP: {str(e)}")
         return {"country": "Неизвестно", "city": "Неизвестно", "org": "Неизвестно"}
 
 def parse_user_agent(user_agent):
-    os = browser = "Неизвестно"
+    if not user_agent:
+        return "Неизвестно", "Неизвестно", "Неизвестно"
     
+    os_info = "Неизвестно"
+    browser = "Неизвестно"
+    
+    # Определение ОС
     os_patterns = [
         ('Windows 11', r'Windows NT 10.0; Win64; x64'),
         ('Windows 10', r'Windows NT 10.0'),
@@ -33,14 +43,17 @@ def parse_user_agent(user_agent):
     
     for name, pattern in os_patterns:
         if re.search(pattern, user_agent):
-            os = name
+            os_info = name
             break
 
+    # Определение браузера
     browser_patterns = [
         ('Chrome', r'Chrome|CriOS'),
         ('Firefox', r'Firefox|FxiOS'),
         ('Safari', r'Safari'),
-        ('Edge', r'Edg')
+        ('Edge', r'Edg'),
+        ('Opera', r'Opera|OPR'),
+        ('IE', r'MSIE|Trident')
     ]
     
     for name, pattern in browser_patterns:
@@ -50,32 +63,40 @@ def parse_user_agent(user_agent):
 
     device = "Смартфон/Планшет" if ('Mobile' in user_agent or 'Android' in user_agent or 'iPhone' in user_agent) else "Компьютер"
 
-    return os, browser, device
+    return os_info, browser, device
 
 def log_data(data):
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(json.dumps(data, ensure_ascii=False) + "\n")
+    try:
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(data, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"Ошибка записи в лог: {str(e)}")
 
 def delete_user_data(ip):
-    if not os.path.exists(LOG_FILE):
+    try:
+        if not os.path.exists(LOG_FILE):
+            return False
+
+        with open(LOG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        new_lines = []
+        for line in lines:
+            try:
+                data = json.loads(line)
+                if data.get("ip") != ip:
+                    new_lines.append(line)
+            except json.JSONDecodeError:
+                continue
+
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+
+        return True
+    except Exception as e:
+        print(f"Ошибка удаления данных: {str(e)}")
         return False
-
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    new_lines = []
-    for line in lines:
-        try:
-            data = json.loads(line)
-            if data.get("ip") != ip:
-                new_lines.append(line)
-        except:
-            continue
-
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
-
-    return True
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -202,11 +223,12 @@ HTML_TEMPLATE = """
             // Устанавливаем куки согласия
             document.cookie = "{{ COOKIE_NAME }}=true; max-age=31536000; path=/";
             document.getElementById('cookieConsent').style.display = 'none';
+            document.getElementById('mainContent').style.display = 'block';
             
             // Запрашиваем геолокацию
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
-                    position => {
+                    function(position) {
                         const lat = position.coords.latitude;
                         const lon = position.coords.longitude;
                         const acc = position.coords.accuracy;
@@ -228,7 +250,8 @@ HTML_TEMPLATE = """
                         
                         loadUserData();
                     },
-                    error => {
+                    function(error) {
+                        console.error("Geolocation error:", error);
                         alert("Для полного функционала требуется доступ к геолокации");
                         loadUserData();
                     },
@@ -247,11 +270,14 @@ HTML_TEMPLATE = """
         }
 
         function loadUserData() {
-            document.getElementById('mainContent').style.display = 'block';
-            document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
-            document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
-            getLocalIP();
-            getFontList();
+            try {
+                document.getElementById('cpuCores').textContent = navigator.hardwareConcurrency || "Неизвестно";
+                document.getElementById('screenRes').textContent = window.screen.width + "x" + window.screen.height;
+                getLocalIP();
+                getFontList();
+            } catch (e) {
+                console.error("Error loading user data:", e);
+            }
         }
 
         function loadBasicData() {
@@ -275,51 +301,76 @@ HTML_TEMPLATE = """
         }
 
         function getLocalIP() {
-            const rtc = new RTCPeerConnection({iceServers: []});
-            rtc.createDataChannel("");
-            rtc.onicecandidate = e => {
-                if (e.candidate) {
-                    const ip = e.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
-                    if (ip) {
-                        document.getElementById('localIp').textContent = ip[1];
-                        rtc.close();
+            try {
+                const rtc = new RTCPeerConnection({iceServers: []});
+                rtc.createDataChannel("");
+                rtc.onicecandidate = function(e) {
+                    if (e.candidate) {
+                        const ip = e.candidate.candidate.match(/([0-9]{1,3}(\.[0-9]{1,3}){3})/);
+                        if (ip) {
+                            document.getElementById('localIp').textContent = ip[1];
+                            rtc.close();
+                        }
                     }
-                }
-            };
-            rtc.createOffer().then(offer => rtc.setLocalDescription(offer));
+                };
+                rtc.createOffer().then(function(offer) {
+                    return rtc.setLocalDescription(offer);
+                }).catch(function(e) {
+                    console.error("Error getting local IP:", e);
+                    document.getElementById('localIp').textContent = "Недоступно";
+                });
+            } catch (e) {
+                console.error("WebRTC not supported:", e);
+                document.getElementById('localIp').textContent = "Недоступно";
+            }
         }
 
         function getFontList() {
-            const fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia"];
-            const available = [];
-            const canvas = document.createElement("canvas");
-            const ctx = canvas.getContext("2d");
-            
-            fonts.forEach(font => {
-                ctx.font = `12px "${font}"`;
-                if (ctx.measureText("test").width > 0) available.push(font);
-            });
-            
-            document.getElementById('fonts').textContent = available.join(", ") || "Неизвестно";
+            try {
+                const fonts = ["Arial", "Times New Roman", "Courier New", "Verdana", "Georgia", "Comic Sans MS", "Impact"];
+                const available = [];
+                const canvas = document.createElement("canvas");
+                const ctx = canvas.getContext("2d");
+                
+                fonts.forEach(function(font) {
+                    ctx.font = '12px "' + font + '"';
+                    if (ctx.measureText("test").width > 0) available.push(font);
+                });
+                
+                document.getElementById('fonts').textContent = available.join(", ") || "Неизвестно";
+            } catch (e) {
+                console.error("Error detecting fonts:", e);
+                document.getElementById('fonts').textContent = "Недоступно";
+            }
         }
 
         function deleteMyData() {
             fetch('/delete_data', {method: 'POST'})
-                .then(response => response.json())
-                .then(data => {
+                .then(function(response) {
+                    if (!response.ok) throw new Error("Network response was not ok");
+                    return response.json();
+                })
+                .then(function(data) {
                     if (data.success) {
                         alert("Ваши данные были удалены!");
                     } else {
                         alert("Ошибка при удалении данных");
                     }
+                })
+                .catch(function(e) {
+                    console.error("Error deleting data:", e);
+                    alert("Ошибка при удалении данных");
                 });
         }
 
-        // При загрузке страницы проверяем согласие
-        if (checkConsent()) {
-            document.getElementById('cookieConsent').style.display = 'none';
-            loadUserData();
-        }
+        // Проверяем согласие при загрузке страницы
+        window.onload = function() {
+            if (checkConsent()) {
+                document.getElementById('cookieConsent').style.display = 'none';
+                document.getElementById('mainContent').style.display = 'block';
+                loadUserData();
+            }
+        };
     </script>
 </body>
 </html>
@@ -327,55 +378,85 @@ HTML_TEMPLATE = """
 
 @app.route('/')
 def index():
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    user_agent = request.headers.get('User-Agent', 'Неизвестно')
-    geo = get_ip_data(ip)
-    os, browser, device = parse_user_agent(user_agent)
-    
-    log_data({
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ip": ip,
-        "user_agent": user_agent,
-        "os": os,
-        "browser": browser,
-        "device": device,
-        "geo": geo
-    })
-    
-    resp = make_response(render_template_string(HTML_TEMPLATE,
-        ip=ip,
-        country=geo.get('country', 'Неизвестно'),
-        city=geo.get('city', 'Неизвестно'),
-        isp=geo.get('org', 'Неизвестно'),
-        os=os,
-        browser=browser,
-        device=device,
-        COOKIE_NAME=COOKIE_NAME
-    ))
-    
-    return resp
+    try:
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
+        
+        # Обработка случая, когда IP содержит несколько адресов
+        real_ip = ip.split(',')[0].strip() if ',' in ip else ip
+        
+        user_agent = request.headers.get('User-Agent', 'Неизвестно')
+        geo = get_ip_data(real_ip)
+        os, browser, device = parse_user_agent(user_agent)
+        
+        log_data({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": real_ip,
+            "user_agent": user_agent,
+            "os": os,
+            "browser": browser,
+            "device": device,
+            "geo": geo
+        })
+        
+        resp = make_response(render_template_string(HTML_TEMPLATE,
+            ip=real_ip,
+            country=geo.get('country', 'Неизвестно'),
+            city=geo.get('city', 'Неизвестно'),
+            isp=geo.get('org', 'Неизвестно'),
+            os=os,
+            browser=browser,
+            device=device,
+            COOKIE_NAME=COOKIE_NAME
+        ))
+        
+        return resp
+    except Exception as e:
+        print(f"Ошибка в обработчике index: {str(e)}")
+        return "Произошла ошибка при обработке запроса", 500
 
 @app.route('/log_gps', methods=['POST'])
 def log_gps():
-    data = request.json
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    
-    log_data({
-        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "ip": ip,
-        "gps_data": data
-    })
-    
-    return {'status': 'success'}
+    try:
+        data = request.get_json()
+        if not data:
+            return {"status": "error", "message": "No data provided"}, 400
+        
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
+        
+        log_data({
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "ip": ip,
+            "gps_data": data
+        })
+        
+        return {"status": "success"}
+    except Exception as e:
+        print(f"Ошибка в обработчике log_gps: {str(e)}")
+        return {"status": "error", "message": str(e)}, 500
 
 @app.route('/delete_data', methods=['POST'])
 def delete_data():
-    ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    success = delete_user_data(ip)
-    return {'success': success}
+    try:
+        ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        if not ip or ip == '127.0.0.1':
+            ip = request.remote_addr
+        
+        success = delete_user_data(ip)
+        return {"success": success}
+    except Exception as e:
+        print(f"Ошибка в обработчике delete_data: {str(e)}")
+        return {"success": False, "error": str(e)}, 500
 
 if __name__ == '__main__':
-    if not os.path.exists(LOG_FILE):
-        with open(LOG_FILE, 'w') as f:
-            pass
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    try:
+        # Создаем директорию для логов, если ее нет
+        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
+        
+        # Запускаем сервер
+        app.run(host='0.0.0.0', port=5000, debug=False)
+    except Exception as e:
+        print(f"Не удалось запустить сервер: {str(e)}")
